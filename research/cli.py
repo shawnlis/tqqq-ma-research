@@ -36,6 +36,7 @@ from .comparison import compare_run_files
 from .controlled_runs import summarize_controlled_runs
 from .open_questions import run_open_questions_config
 from .replay import replay_regime_windows
+from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
 
 logging.basicConfig(
@@ -578,6 +579,21 @@ def build_parser() -> argparse.ArgumentParser:
     replay_regime.add_argument("--execution-model", help="Override execution model.")
     replay_regime.add_argument("--data-csv", help="Optional fixture CSV with Date, TQQQ, and QQQ columns.")
 
+    audit_regime_allocation_parser = subparsers.add_parser(
+        "audit-regime-allocation",
+        help="Audit legacy regime allocation signals, weights, turnover, returns, and compounding.",
+    )
+    audit_regime_allocation_parser.add_argument("--windows", required=True, help="Path to legacy regime walk-forward windows CSV.")
+    audit_regime_allocation_parser.add_argument("--old-stitched", required=True, help="Path to legacy stitched equity CSV.")
+    audit_regime_allocation_parser.add_argument("--output-dir", required=True, help="Directory for regime allocation audit outputs.")
+    audit_regime_allocation_parser.add_argument("--start-date", help="Optional old stitched/data start date.")
+    audit_regime_allocation_parser.add_argument("--end-date", help="Optional old stitched/data end date.")
+    audit_regime_allocation_parser.add_argument("--tolerance", type=float, default=1e-8, help="Numeric comparison tolerance.")
+    audit_regime_allocation_parser.add_argument("--transaction-cost-bps", type=float, help="Override transaction cost bps.")
+    audit_regime_allocation_parser.add_argument("--execution-model", help="Override execution model.")
+    audit_regime_allocation_parser.add_argument("--data-csv", help="Optional fixture CSV with Date, TQQQ, and QQQ columns.")
+    audit_regime_allocation_parser.add_argument("--cache-dir", default="./price_cache", help="Price cache directory.")
+
     return parser
 
 
@@ -679,6 +695,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         passed = bool(summary["passed"].iloc[0]) if not summary.empty else False
         return 0 if passed else 1
+    if command == "audit-regime-allocation":
+        audit_regime_allocation(
+            windows_path=Path(args.windows),
+            old_stitched_path=Path(args.old_stitched),
+            output_dir=Path(args.output_dir),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            tolerance=float(args.tolerance),
+            transaction_cost_bps=args.transaction_cost_bps,
+            execution_model=args.execution_model,
+            data_csv=Path(args.data_csv) if args.data_csv else None,
+            cache_dir=args.cache_dir,
+        )
+        return 0
 
     parser.error(f"Unsupported command: {command}")
     return 2

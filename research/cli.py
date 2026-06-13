@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .data import load_prices
-from .baseline_gate import check_blockers, create_baseline_regression_report
+from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import dry_run_experiment_config, run_batch_config, run_experiment_config
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
@@ -648,6 +648,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     baseline_regression.add_argument("--tolerance", type=float, default=1e-8)
 
+    accept_baseline = subparsers.add_parser(
+        "accept-baseline-regression",
+        help="Formally accept v10 baseline regression as a data-vintage mismatch after diagnostic checks pass.",
+    )
+    accept_baseline.add_argument("--reason", required=True, help="Acceptance rationale.")
+    accept_baseline.add_argument(
+        "--max-final-equity-rel-diff",
+        type=float,
+        required=True,
+        help="Maximum allowed abs(replay_final - old_final) / abs(old_final).",
+    )
+    accept_baseline.add_argument(
+        "--require-weight-match",
+        action="store_true",
+        default=True,
+        help="Require TQQQ/QQQ/position/turnover diffs to be floating-noise small.",
+    )
+    accept_baseline.add_argument("--weight-tolerance", type=float, default=1e-12)
+    accept_baseline.add_argument("--output-dir", help="Baseline regression output directory. Defaults to gate directory.")
+    accept_baseline.add_argument(
+        "--replay-summary",
+        default="outputs/replay/v10_regime_windows/replay_compare_summary.csv",
+    )
+    accept_baseline.add_argument(
+        "--baseline-data-summary",
+        default="outputs/comparison/baseline_data_audit/baseline_data_audit_summary.csv",
+    )
+    accept_baseline.add_argument(
+        "--allocation-summary",
+        default="outputs/comparison/regime_allocation_audit/regime_allocation_audit_summary.csv",
+    )
+    accept_baseline.add_argument(
+        "--baseline-regression-summary",
+        default="outputs/baseline_regression/baseline_regression_summary.csv",
+    )
+
     return parser
 
 
@@ -783,6 +819,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             tolerance=float(args.tolerance),
         )
         return 0
+    if command == "accept-baseline-regression":
+        try:
+            accept_baseline_regression(
+                reason=args.reason,
+                max_final_equity_rel_diff=float(args.max_final_equity_rel_diff),
+                require_weight_match=bool(args.require_weight_match),
+                output_dir=Path(args.output_dir) if args.output_dir else None,
+                replay_summary_path=Path(args.replay_summary),
+                baseline_data_summary_path=Path(args.baseline_data_summary),
+                allocation_summary_path=Path(args.allocation_summary),
+                baseline_regression_summary_path=Path(args.baseline_regression_summary),
+                weight_tolerance=float(args.weight_tolerance),
+            )
+            return 0
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
 
     parser.error(f"Unsupported command: {command}")
     return 2

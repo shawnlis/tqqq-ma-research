@@ -35,6 +35,7 @@ from .audit import audit_baseline_data, audit_config, audit_data
 from .candidates import extract_final_candidates
 from .comparison import compare_run_files
 from .controlled_runs import summarize_controlled_runs
+from .data_snapshot import freeze_data_snapshot, verify_data_snapshot
 from .open_questions import run_open_questions_config
 from .replay import replay_regime_windows
 from .regime_allocation_audit import audit_regime_allocation
@@ -684,6 +685,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="outputs/baseline_regression/baseline_regression_summary.csv",
     )
 
+    freeze_snapshot = subparsers.add_parser(
+        "freeze-data-snapshot",
+        help="Write a manifest of current cached/downloaded price-data hashes.",
+    )
+    freeze_snapshot.add_argument("--symbols", nargs="+", required=True, help="Symbols to include in the snapshot.")
+    freeze_snapshot.add_argument("--output-dir", required=True, help="Directory for data snapshot outputs.")
+    freeze_snapshot.add_argument("--start-date", default="2011-01-01", help="Snapshot start date.")
+    freeze_snapshot.add_argument("--end-date", help="Optional snapshot end date.")
+    freeze_snapshot.add_argument("--cache-dir", default="./price_cache", help="Price cache directory.")
+    freeze_snapshot.add_argument("--data-csv", help="Optional fixture CSV with Date and symbol columns.")
+
+    verify_snapshot = subparsers.add_parser(
+        "verify-data-snapshot",
+        help="Reload current data and verify it against a data snapshot manifest.",
+    )
+    verify_snapshot.add_argument("manifest_path", help="Path to data_snapshot_manifest.json.")
+    verify_snapshot.add_argument("--allow-drift", action="store_true", help="Exit 0 even if hashes differ.")
+    verify_snapshot.add_argument("--cache-dir", help="Override price cache directory.")
+    verify_snapshot.add_argument("--data-csv", help="Override data CSV for verification.")
+
     return parser
 
 
@@ -833,6 +854,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 weight_tolerance=float(args.weight_tolerance),
             )
             return 0
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "freeze-data-snapshot":
+        freeze_data_snapshot(
+            symbols=args.symbols,
+            output_dir=Path(args.output_dir),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            cache_dir=args.cache_dir,
+            data_csv=Path(args.data_csv) if args.data_csv else None,
+        )
+        return 0
+    if command == "verify-data-snapshot":
+        try:
+            _, passed = verify_data_snapshot(
+                Path(args.manifest_path),
+                allow_drift=bool(args.allow_drift),
+                cache_dir=args.cache_dir,
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+            )
+            return 0 if passed else 1
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1

@@ -29,6 +29,7 @@ from .validation import (
     walk_forward_search_ensemble,
     walk_forward_windows,
 )
+from .audit import audit_config, audit_data
 from .candidates import extract_final_candidates
 from .open_questions import run_open_questions_config
 from .tournament import run_tournament_config
@@ -493,6 +494,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract_candidates.add_argument("tournament_dir", help="Path to a tournament output directory.")
 
+    audit_config_parser = subparsers.add_parser(
+        "audit-config",
+        help="Audit experiment or tournament YAML before launching long-running runs.",
+    )
+    audit_config_parser.add_argument("config_path", help="Path to an experiment, batch, or tournament YAML config.")
+
+    audit_data_parser = subparsers.add_parser(
+        "audit-data",
+        help="Audit required data availability for an experiment or tournament YAML config.",
+    )
+    audit_data_parser.add_argument("config_path", help="Path to an experiment, batch, or tournament YAML config.")
+
     return parser
 
 
@@ -525,6 +538,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if command == "extract-candidates":
         extract_final_candidates(Path(args.tournament_dir))
+        return 0
+    if command == "audit-config":
+        audit_config(Path(args.config_path))
+        return 0
+    if command == "audit-data":
+        audit_data(Path(args.config_path))
         return 0
 
     parser.error(f"Unsupported command: {command}")

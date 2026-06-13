@@ -1,0 +1,57 @@
+tournament_name: candidate_strategy_tournament
+benchmark_symbol: TQQQ
+output_dir: outputs/tournament
+walk_forward_variants:
+  - name: standard_5y_1y
+    train_years: 5
+    test_years: 1
+  - name: alternate_3y_1y
+    train_years: 3
+    test_years: 1
+  - name: alternate_7y_1y
+    train_years: 7
+    test_years: 1
+cost_scenarios: [10.0, 25.0, 50.0]
+strategies:
+  - family: Existing MA ensemble
+    category: tqqq
+    config: configs/ma_ensemble.yaml
+  - family: Existing regime
+    category: tqqq
+    config: configs/regime_tqqq.yaml
+  - family: CoreOverlayTQQQStrategy
+    category: tqqq
+    config: configs/core_overlay_tqqq.yaml
+  - family: CoreOverlay + Rebound
+    category: tqqq
+    config: configs/core_overlay_with_rebound.yaml
+  - family: CoreOverlay + DrawdownGovernor
+    category: tqqq
+    config: configs/core_overlay_governor.yaml
+  - family: VolTargetTQQQStrategy
+    category: tqqq
+    config: configs/vol_target_tqqq.yaml
+  - family: VolTarget + DrawdownGovernor
+    category: tqqq
+    config: configs/vol_target_governor.yaml
+  - family: MarketInternals CoreOverlay
+    category: tqqq
+    config: configs/core_overlay_market_internals.yaml
+  - family: MarketInternals VolTarget
+    category: tqqq
+    config: configs/vol_target_market_internals.yaml
+  - family: CrossAssetLeveragedMomentum
+    category: tqqq
+    config: configs/rotation_tqqq_soxl_upro.yaml
+  - family: SOXL CoreOverlay
+    category: soxl
+    config: configs/soxl_core_overlay.yaml
+  - family: SOXL VolTarget
+    category: soxl
+    config: configs/soxl_vol_target.yaml
+  - family: SOXL Regime
+    category: soxl
+    config: configs/soxl_regime.yaml
+  - family: SOXL Rotation
+    category: soxl
+    config: configs/soxl_rotation.yaml

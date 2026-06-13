@@ -1,0 +1,26 @@
+﻿experiment_name: vol_target_tqqq
+symbols: [TQQQ, QQQ]
+start_date: "2011-01-01"
+end_date:
+strategy_name: vol_target
+parameter_grid:
+  target_ann_vol: [0.45, 0.60, 0.75, 0.90]
+  realized_vol_window: [10, 20, 40, 63]
+  min_exposure: [0.25, 0.50, 0.75]
+  max_exposure: [1.00, 1.25, 1.50, 2.00]
+  trend_window: [100, 150, 200]
+  momentum_window: [20, 63, 126]
+  trend_multiplier_below_ma: [0.25, 0.50, 0.75]
+  momentum_boost: [1.00, 1.15, 1.30]
+  crash_vol_cutoff: [0.040, 0.050, 0.060]
+  crash_exposure: [0.00, 0.25, 0.50]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/vol_target_tqqq
+

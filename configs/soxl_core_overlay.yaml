@@ -1,0 +1,37 @@
+﻿experiment_name: soxl_core_overlay
+symbols: [SOXL, SOXX, SMH, QQQ, TQQQ, SGOV, BIL]
+start_date: "2011-01-01"
+end_date:
+strategy_name: core_overlay
+asset_config:
+  trade_asset: SOXL
+  primary_signal_asset: SOXX
+  secondary_filter_asset: SMH
+  benchmark_symbol: SOXL
+  risk_off_symbol: BIL
+benchmark_comparison_symbols: [TQQQ, SOXX, SMH]
+soxl_experiment: true
+parameter_grid:
+  core_exposure: [0.25, 0.50]
+  overlay_max: [0.35, 0.50]
+  max_total_exposure: [1.00, 1.25]
+  trend_window: [100, 200]
+  fast_trend_window: [20]
+  momentum_window: [20, 63]
+  vol_window: [20]
+  vol_cap: [0.050]
+  crash_cut_exposure: [0.25, 0.50]
+  rebound_boost: [true, false]
+  risk_off_symbol: [CASH, BIL]
+  risk_off_weight: [1.0]
+benchmark_symbol: SOXL
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/soxl_core_overlay
+use_csv_if_exists: false
+

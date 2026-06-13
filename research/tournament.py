@@ -1,0 +1,498 @@
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .experiments import _load_price_data, _run_walk_forward, load_yaml_file
+from .reports import compare_to_benchmark, generate_tournament_report
+
+
+DEFAULT_WALK_FORWARD_VARIANTS = (
+    {"name": "standard_5y_1y", "train_years": 5, "test_years": 1},
+    {"name": "alternate_3y_1y", "train_years": 3, "test_years": 1},
+    {"name": "alternate_7y_1y", "train_years": 7, "test_years": 1},
+)
+DEFAULT_COST_SCENARIOS = (10.0, 25.0, 50.0)
+SUMMARY_COLUMNS = [
+    "family",
+    "category",
+    "experiment_name",
+    "config_path",
+    "strategy_name",
+    "selection_benchmark_symbol",
+    "tournament_benchmark_symbol",
+    "baseline_variant",
+    "baseline_final_equity_ratio",
+    "baseline_excess_cagr",
+    "baseline_strategy_cagr",
+    "baseline_strategy_max_dd",
+    "baseline_strategy_calmar",
+    "median_final_equity_ratio",
+    "worst_final_equity_ratio",
+    "validation_variants_beating_tqqq",
+    "successful_variants",
+    "failed_variants",
+    "total_variants",
+    "variant_win_rate",
+    "worst_strategy_max_dd",
+    "cost_10_final_equity_ratio",
+    "cost_25_final_equity_ratio",
+    "cost_50_final_equity_ratio",
+    "cost_sensitivity_25_vs_10",
+    "cost_sensitivity_50_vs_10",
+    "robustness_score",
+    "accepted_candidate",
+    "rejection_reason",
+    "output_dir",
+]
+
+
+def _resolve_config_path(tournament_path: Path, value: Any) -> Path:
+    candidate = Path(str(value))
+    if candidate.exists():
+        return candidate
+    return tournament_path.parent / candidate
+
+
+def _strategy_entries(tournament_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    entries = tournament_config.get("strategies") or tournament_config.get("configs")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("Tournament config must contain a non-empty strategies or configs list.")
+    normalized = []
+    for entry in entries:
+        if isinstance(entry, str):
+            normalized.append({"config": entry})
+        elif isinstance(entry, dict):
+            normalized.append(dict(entry))
+        else:
+            raise ValueError("Tournament strategy entries must be paths or mappings.")
+    return normalized
+
+
+def _walk_forward_variants(tournament_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = tournament_config.get("walk_forward_variants", DEFAULT_WALK_FORWARD_VARIANTS)
+    variants = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("walk_forward_variants entries must be mappings.")
+        train_years = int(item["train_years"])
+        test_years = int(item.get("test_years", 1))
+        name = str(item.get("name", f"{train_years}y_{test_years}y"))
+        variants.append(
+            {
+                "name": name,
+                "train_years": train_years,
+                "test_years": test_years,
+                "walk_forward_mode": str(item.get("walk_forward_mode", "rolling")),
+            }
+        )
+    return variants
+
+
+def _cost_scenarios(tournament_config: Dict[str, Any]) -> List[float]:
+    return [float(value) for value in tournament_config.get("cost_scenarios", DEFAULT_COST_SCENARIOS)]
+
+
+def _variant_name(wf_variant: Dict[str, Any], cost_bps: float) -> str:
+    return f"{wf_variant['name']}__{float(cost_bps):g}bps"
+
+
+def _load_entry_config(tournament_path: Path, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    if "config" in entry:
+        config_path = _resolve_config_path(tournament_path, entry["config"])
+        config = load_yaml_file(config_path)
+        config_path_label = str(config_path)
+    else:
+        config = dict(entry.get("experiment", entry))
+        config_path_label = ""
+
+    overrides = entry.get("overrides")
+    if isinstance(overrides, dict):
+        config.update(overrides)
+    return config, config_path_label
+
+
+def _run_tournament_variant(
+    *,
+    base_config: Dict[str, Any],
+    data: pd.DataFrame,
+    family: str,
+    category: str,
+    config_path_label: str,
+    tournament_benchmark_symbol: str,
+    wf_variant: Dict[str, Any],
+    cost_bps: float,
+) -> Dict[str, Any]:
+    variant_config = copy.deepcopy(base_config)
+    variant_config["train_years"] = int(wf_variant["train_years"])
+    variant_config["test_years"] = int(wf_variant["test_years"])
+    variant_config["walk_forward_mode"] = str(wf_variant.get("walk_forward_mode", "rolling"))
+    variant_config["transaction_cost_bps"] = float(cost_bps)
+    variant_config["anti_overfit_validation"] = {"enabled": False}
+    variant_name = _variant_name(wf_variant, cost_bps)
+
+    row: Dict[str, Any] = {
+        "family": family,
+        "category": category,
+        "experiment_name": str(base_config.get("experiment_name", family)),
+        "config_path": config_path_label,
+        "strategy_name": str(base_config.get("strategy_name", "")),
+        "selection_benchmark_symbol": str(base_config.get("benchmark_symbol", "")).upper(),
+        "tournament_benchmark_symbol": tournament_benchmark_symbol,
+        "variant": variant_name,
+        "walk_forward_variant": str(wf_variant["name"]),
+        "train_years": int(wf_variant["train_years"]),
+        "test_years": int(wf_variant["test_years"]),
+        "walk_forward_mode": str(wf_variant.get("walk_forward_mode", "rolling")),
+        "transaction_cost_bps": float(cost_bps),
+        "status": "error",
+        "error": "",
+    }
+
+    try:
+        wf_table, stitched, grid_size = _run_walk_forward(variant_config, data)
+        row["grid_size"] = int(grid_size)
+        row["walk_forward_windows"] = int(len(wf_table))
+        row["stitched_rows"] = int(len(stitched))
+        if stitched.empty:
+            row["status"] = "no_result"
+            row["error"] = "variant produced no stitched equity"
+            return row
+
+        summary, _ = compare_to_benchmark(
+            stitched,
+            data,
+            benchmark_symbol=tournament_benchmark_symbol,
+        )
+        metrics = summary.iloc[0].to_dict()
+        row.update(metrics)
+        row["status"] = "ok"
+        row["error"] = ""
+        return row
+    except Exception as exc:
+        row["error"] = str(exc)
+        return row
+
+
+def _safe_float(row: pd.Series, column: str) -> float:
+    value = row.get(column, np.nan)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def _first_ok_variant(group: pd.DataFrame, variant: str) -> Optional[pd.Series]:
+    rows = group[(group["variant"] == variant) & (group["status"] == "ok")]
+    if rows.empty:
+        return None
+    return rows.iloc[0]
+
+
+def _rejection_reason(
+    *,
+    baseline_ratio: float,
+    cost_25_ratio: float,
+    worst_ratio: float,
+    successful_variants: int,
+    failed_variants: int,
+    variant_win_rate: float,
+) -> str:
+    reasons = []
+    if successful_variants == 0:
+        reasons.append("all variants failed")
+    if failed_variants > 0:
+        reasons.append(f"{failed_variants} variant run(s) failed")
+    if not pd.notna(baseline_ratio) or baseline_ratio <= 1.0:
+        reasons.append("standard 5/1 at 10 bps did not beat TQQQ")
+    if not pd.notna(cost_25_ratio) or cost_25_ratio <= 1.0:
+        reasons.append("standard 5/1 did not remain competitive at 25 bps")
+    if pd.notna(worst_ratio) and worst_ratio <= 1.0:
+        reasons.append("at least one validation variant failed raw TQQQ outperformance")
+    if pd.notna(variant_win_rate) and variant_win_rate < 0.5:
+        reasons.append("fewer than half of validation variants beat TQQQ")
+    return "; ".join(reasons)
+
+
+def _robustness_score(
+    *,
+    median_ratio: float,
+    worst_ratio: float,
+    variant_win_rate: float,
+    worst_max_dd: float,
+    cost_25_ratio: float,
+    failed_variants: int,
+    total_variants: int,
+) -> float:
+    if total_variants <= 0:
+        return np.nan
+    failure_penalty = float(failed_variants) / float(total_variants)
+    drawdown_component = 1.0 + float(worst_max_dd) if pd.notna(worst_max_dd) else 0.0
+    values = {
+        "median_ratio": float(median_ratio) if pd.notna(median_ratio) else 0.0,
+        "worst_ratio": float(worst_ratio) if pd.notna(worst_ratio) else 0.0,
+        "variant_win_rate": float(variant_win_rate) if pd.notna(variant_win_rate) else 0.0,
+        "drawdown_component": drawdown_component,
+        "cost_25_ratio": float(cost_25_ratio) if pd.notna(cost_25_ratio) else 0.0,
+    }
+    return float(
+        0.35 * values["median_ratio"]
+        + 0.25 * values["worst_ratio"]
+        + 0.15 * values["variant_win_rate"]
+        + 0.10 * values["drawdown_component"]
+        + 0.15 * values["cost_25_ratio"]
+        - 0.25 * failure_penalty
+    )
+
+
+def summarize_tournament(variant_results: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if variant_results.empty:
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
+
+    group_cols = ["family", "category", "experiment_name", "config_path"]
+    for keys, group in variant_results.groupby(group_cols, dropna=False):
+        family, category, experiment_name, config_path = keys
+        ok = group[group["status"] == "ok"].copy()
+        total_variants = int(len(group))
+        successful_variants = int(len(ok))
+        failed_variants = int((group["status"] != "ok").sum())
+
+        ratio_series = pd.to_numeric(ok.get("final_equity_ratio", pd.Series(dtype=float)), errors="coerce")
+        median_ratio = float(ratio_series.median()) if not ratio_series.dropna().empty else np.nan
+        worst_ratio = float(ratio_series.min()) if not ratio_series.dropna().empty else np.nan
+        variants_beating = int((ratio_series > 1.0).sum()) if not ratio_series.dropna().empty else 0
+        variant_win_rate = variants_beating / successful_variants if successful_variants else np.nan
+
+        max_dd_series = pd.to_numeric(ok.get("strategy_max_dd", pd.Series(dtype=float)), errors="coerce")
+        worst_max_dd = float(max_dd_series.min()) if not max_dd_series.dropna().empty else np.nan
+
+        baseline_variant = "standard_5y_1y__10bps"
+        baseline = _first_ok_variant(group, baseline_variant)
+        if baseline is None and not ok.empty:
+            baseline = ok.sort_values("final_equity_ratio", ascending=False).iloc[0]
+            baseline_variant = str(baseline["variant"])
+
+        cost_10 = _first_ok_variant(group, "standard_5y_1y__10bps")
+        cost_25 = _first_ok_variant(group, "standard_5y_1y__25bps")
+        cost_50 = _first_ok_variant(group, "standard_5y_1y__50bps")
+        cost_10_ratio = _safe_float(cost_10, "final_equity_ratio") if cost_10 is not None else np.nan
+        cost_25_ratio = _safe_float(cost_25, "final_equity_ratio") if cost_25 is not None else np.nan
+        cost_50_ratio = _safe_float(cost_50, "final_equity_ratio") if cost_50 is not None else np.nan
+        sensitivity_25 = cost_25_ratio / cost_10_ratio if pd.notna(cost_25_ratio) and pd.notna(cost_10_ratio) and cost_10_ratio != 0.0 else np.nan
+        sensitivity_50 = cost_50_ratio / cost_10_ratio if pd.notna(cost_50_ratio) and pd.notna(cost_10_ratio) and cost_10_ratio != 0.0 else np.nan
+
+        baseline_ratio = _safe_float(baseline, "final_equity_ratio") if baseline is not None else np.nan
+        rejection_reason = _rejection_reason(
+            baseline_ratio=baseline_ratio,
+            cost_25_ratio=cost_25_ratio,
+            worst_ratio=worst_ratio,
+            successful_variants=successful_variants,
+            failed_variants=failed_variants,
+            variant_win_rate=variant_win_rate,
+        )
+        robustness = _robustness_score(
+            median_ratio=median_ratio,
+            worst_ratio=worst_ratio,
+            variant_win_rate=variant_win_rate,
+            worst_max_dd=worst_max_dd,
+            cost_25_ratio=cost_25_ratio,
+            failed_variants=failed_variants,
+            total_variants=total_variants,
+        )
+
+        rows.append(
+            {
+                "family": family,
+                "category": category,
+                "experiment_name": experiment_name,
+                "config_path": config_path,
+                "strategy_name": str(group["strategy_name"].iloc[0]),
+                "selection_benchmark_symbol": str(group["selection_benchmark_symbol"].iloc[0]),
+                "tournament_benchmark_symbol": str(group["tournament_benchmark_symbol"].iloc[0]),
+                "baseline_variant": baseline_variant if baseline is not None else "",
+                "baseline_final_equity_ratio": baseline_ratio,
+                "baseline_excess_cagr": _safe_float(baseline, "excess_cagr") if baseline is not None else np.nan,
+                "baseline_strategy_cagr": _safe_float(baseline, "strategy_cagr") if baseline is not None else np.nan,
+                "baseline_strategy_max_dd": _safe_float(baseline, "strategy_max_dd") if baseline is not None else np.nan,
+                "baseline_strategy_calmar": _safe_float(baseline, "strategy_calmar") if baseline is not None else np.nan,
+                "median_final_equity_ratio": median_ratio,
+                "worst_final_equity_ratio": worst_ratio,
+                "validation_variants_beating_tqqq": variants_beating,
+                "successful_variants": successful_variants,
+                "failed_variants": failed_variants,
+                "total_variants": total_variants,
+                "variant_win_rate": variant_win_rate,
+                "worst_strategy_max_dd": worst_max_dd,
+                "cost_10_final_equity_ratio": cost_10_ratio,
+                "cost_25_final_equity_ratio": cost_25_ratio,
+                "cost_50_final_equity_ratio": cost_50_ratio,
+                "cost_sensitivity_25_vs_10": sensitivity_25,
+                "cost_sensitivity_50_vs_10": sensitivity_50,
+                "robustness_score": robustness,
+                "accepted_candidate": rejection_reason == "",
+                "rejection_reason": rejection_reason,
+                "output_dir": "",
+            }
+        )
+    return pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
+
+
+def _failure_report(variant_results: pd.DataFrame, summary: pd.DataFrame) -> pd.DataFrame:
+    failed_runs = variant_results[variant_results["status"] != "ok"].copy()
+    if not failed_runs.empty:
+        failed_runs["record_type"] = "failed_run"
+        failed_runs["rejection_reason"] = failed_runs["error"]
+    rejected = summary[summary["rejection_reason"].astype(str) != ""].copy()
+    if not rejected.empty:
+        rejected["record_type"] = "rejected_strategy"
+        rejected["variant"] = ""
+        rejected["status"] = "rejected"
+        rejected["error"] = rejected["rejection_reason"]
+    columns = list(
+        dict.fromkeys(
+            ["record_type", "family", "category", "experiment_name", "config_path", "variant", "status", "error", "rejection_reason"]
+            + list(failed_runs.columns if not failed_runs.empty else [])
+            + list(rejected.columns if not rejected.empty else [])
+        )
+    )
+    frames = [frame for frame in (failed_runs, rejected) if not frame.empty]
+    return pd.concat(frames, ignore_index=True, sort=False).reindex(columns=columns) if frames else pd.DataFrame(columns=columns)
+
+
+def _print_conclusion(summary: pd.DataFrame) -> None:
+    print("\n=== Tournament conclusion ===")
+    if summary.empty:
+        print("No tournament summary rows were produced.")
+        return
+
+    best_raw = summary.sort_values("baseline_final_equity_ratio", ascending=False).iloc[0]
+    best_risk = summary.sort_values("robustness_score", ascending=False).iloc[0]
+    soxl = summary[summary["category"].astype(str).str.lower().str.contains("soxl")]
+    best_soxl = soxl.sort_values("baseline_final_equity_ratio", ascending=False).iloc[0] if not soxl.empty else None
+    rejected = summary[summary["rejection_reason"].astype(str) != ""]
+
+    print(
+        "BEST RAW OUTPERFORMER: "
+        f"{best_raw['family']} | ratio={float(best_raw['baseline_final_equity_ratio']):.6f}"
+    )
+    print(
+        "BEST RISK-ADJUSTED CANDIDATE: "
+        f"{best_risk['family']} | robustness={float(best_risk['robustness_score']):.6f}"
+    )
+    if best_soxl is not None:
+        print(
+            "BEST SOXL CANDIDATE: "
+            f"{best_soxl['family']} | ratio={float(best_soxl['baseline_final_equity_ratio']):.6f}"
+        )
+    else:
+        print("BEST SOXL CANDIDATE: none run")
+
+    print("STRATEGIES REJECTED AND WHY:")
+    if rejected.empty:
+        print("None.")
+    else:
+        for _, row in rejected.iterrows():
+            print(f"- {row['family']}: {row['rejection_reason']}")
+
+
+def run_tournament_config(tournament_path: Path) -> pd.DataFrame:
+    tournament_path = Path(tournament_path)
+    tournament_config = load_yaml_file(tournament_path)
+    tournament_name = str(tournament_config.get("tournament_name", tournament_path.stem))
+    output_dir = Path(tournament_config.get("output_dir", Path("outputs") / tournament_name))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tournament_benchmark_symbol = str(tournament_config.get("benchmark_symbol", "TQQQ")).upper()
+    variants = _walk_forward_variants(tournament_config)
+    costs = _cost_scenarios(tournament_config)
+
+    rows: List[Dict[str, Any]] = []
+    for entry in _strategy_entries(tournament_config):
+        family = str(entry.get("family", entry.get("name", entry.get("config", "strategy"))))
+        category = str(entry.get("category", "general"))
+        config_path_label = ""
+        try:
+            base_config, config_path_label = _load_entry_config(tournament_path, entry)
+            base_config.setdefault("experiment_name", family.lower().replace(" ", "_"))
+            base_config.setdefault("output_dir", str(output_dir / "experiments" / base_config["experiment_name"]))
+            data = _load_price_data(base_config)
+            if tournament_benchmark_symbol not in data.columns:
+                raise ValueError(
+                    f"Tournament benchmark {tournament_benchmark_symbol} is missing from data for {family}."
+                )
+            for wf_variant in variants:
+                for cost in costs:
+                    rows.append(
+                        _run_tournament_variant(
+                            base_config=base_config,
+                            data=data,
+                            family=family,
+                            category=category,
+                            config_path_label=config_path_label,
+                            tournament_benchmark_symbol=tournament_benchmark_symbol,
+                            wf_variant=wf_variant,
+                            cost_bps=cost,
+                        )
+                    )
+        except Exception as exc:
+            for wf_variant in variants:
+                for cost in costs:
+                    rows.append(
+                        {
+                            "family": family,
+                            "category": category,
+                            "experiment_name": family.lower().replace(" ", "_"),
+                            "config_path": config_path_label or str(entry.get("config", "")),
+                            "strategy_name": "",
+                            "selection_benchmark_symbol": "",
+                            "tournament_benchmark_symbol": tournament_benchmark_symbol,
+                            "variant": _variant_name(wf_variant, float(cost)),
+                            "walk_forward_variant": str(wf_variant["name"]),
+                            "train_years": int(wf_variant["train_years"]),
+                            "test_years": int(wf_variant["test_years"]),
+                            "walk_forward_mode": str(wf_variant.get("walk_forward_mode", "rolling")),
+                            "transaction_cost_bps": float(cost),
+                            "status": "error",
+                            "error": str(exc),
+                        }
+                    )
+
+    variant_results = pd.DataFrame(rows)
+    summary = summarize_tournament(variant_results)
+    summary["output_dir"] = str(output_dir)
+    failures = _failure_report(variant_results, summary)
+
+    variant_results.to_csv(output_dir / "tournament_variant_results.csv", index=False)
+    summary.to_csv(output_dir / "tournament_summary.csv", index=False)
+    summary.sort_values("baseline_final_equity_ratio", ascending=False).to_csv(
+        output_dir / "tournament_ranked_by_final_equity_ratio.csv",
+        index=False,
+    )
+    summary.sort_values("robustness_score", ascending=False).to_csv(
+        output_dir / "tournament_ranked_by_robustness.csv",
+        index=False,
+    )
+    failures.to_csv(output_dir / "tournament_failures.csv", index=False)
+    (output_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "command": "run-tournament",
+                "config_path": str(tournament_path),
+                **tournament_config,
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    generate_tournament_report(output_dir=output_dir, config=tournament_config)
+
+    _print_conclusion(summary)
+    print(f"\nTournament outputs written to: {output_dir}")
+    return summary

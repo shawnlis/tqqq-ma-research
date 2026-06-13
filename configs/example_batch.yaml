@@ -1,0 +1,4 @@
+batch_name: example_batch
+configs:
+  - example_ma.yaml
+output_dir: outputs/example_batch

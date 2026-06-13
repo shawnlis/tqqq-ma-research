@@ -1,0 +1,34 @@
+﻿experiment_name: soxl_rotation
+symbols: [SOXL, SOXX, SMH, QQQ, TQQQ, SGOV, BIL]
+start_date: "2011-01-01"
+end_date:
+strategy_name: rotation
+asset_config:
+  trade_asset: SOXL
+  primary_signal_asset: SOXX
+  secondary_filter_asset: SMH
+  benchmark_symbol: SOXL
+  risk_off_symbol: BIL
+benchmark_comparison_symbols: [TQQQ, SOXX, SMH]
+soxl_experiment: true
+parameter_grid:
+  risk_assets: [SOXL, TQQQ]
+  rebalance_frequency: [weekly, monthly]
+  top_n: [1, 2]
+  max_asset_weight: [0.50, 1.00]
+  max_total_leveraged_exposure: [1.00, 1.25]
+  trend_filter_symbol: [SOXX, SMH, QQQ]
+  trend_filter_window: [100, 200]
+  defensive_asset: [CASH, BIL]
+  require_positive_momentum: [true, false]
+benchmark_symbol: SOXL
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/soxl_rotation
+use_csv_if_exists: false
+

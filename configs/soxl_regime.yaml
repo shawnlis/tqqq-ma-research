@@ -1,0 +1,40 @@
+﻿experiment_name: soxl_regime
+symbols: [SOXL, SOXX, SMH, QQQ, TQQQ, SGOV, BIL]
+start_date: "2011-01-01"
+end_date:
+strategy_name: regime
+asset_config:
+  trade_asset: SOXL
+  primary_signal_asset: SOXX
+  secondary_filter_asset: SMH
+  benchmark_symbol: SOXL
+  risk_off_symbol: BIL
+benchmark_comparison_symbols: [TQQQ, SOXX, SMH]
+soxl_experiment: true
+parameter_grid:
+  trend_windows: [100, 200]
+  momentum_windows: [20, 63]
+  vol_windows: [20]
+  trend_on_levels: [0.00, 0.03]
+  trend_off_levels: [0.00]
+  mom_on_levels: [0.00, 0.05]
+  mom_off_levels: [0.00]
+  vol_caps: [0.070]
+  risk_on_leverages: [1.0, 1.25]
+  risk_off_qqq_positions: [0.0]
+  transition_positions: [0.25, 0.50]
+  min_hold_days_options: [0]
+  cooldown_days_options: [2, 5]
+  risk_off_symbol: [CASH, BIL]
+  risk_off_weight: [1.0]
+benchmark_symbol: SOXL
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/soxl_regime
+use_csv_if_exists: false
+

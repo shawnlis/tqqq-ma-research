@@ -1,0 +1,26 @@
+experiment_name: ma_ensemble
+symbols: [TQQQ, QQQ]
+start_date: "2011-01-01"
+end_date:
+strategy_name: ma
+parameter_grid:
+  short_range: [3, 5, 8]
+  long_range: [20, 50, 100]
+  ma_types: [sma, ema]
+  signal_assets: [TQQQ, QQQ]
+  thresholds: [0.0]
+  cooldown_days_options: [0]
+  qqq_filter_options: [false, true]
+  qqq_filter_windows: [200]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+use_ensemble_wf: true
+ensemble_top_k: 5
+ensemble_weight_power: 2.0
+output_dir: outputs/ma_ensemble

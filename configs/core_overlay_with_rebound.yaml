@@ -1,0 +1,34 @@
+﻿experiment_name: core_overlay_with_rebound
+symbols: [TQQQ, QQQ]
+start_date: "2011-01-01"
+end_date:
+strategy_name: core_overlay
+parameter_grid:
+  core_exposure: [0.50, 0.65]
+  overlay_max: [0.35, 0.50]
+  max_total_exposure: [1.15, 1.25]
+  trend_window: [150, 200]
+  fast_trend_window: [20]
+  momentum_window: [63]
+  vol_window: [20]
+  vol_cap: [0.022]
+  crash_cut_exposure: [0.25]
+  rebound_boost: [false]
+  use_rebound_module: [true]
+  rolling_high_window: [63, 126, 252]
+  drawdown_trigger: [-0.15, -0.20, -0.30]
+  rebound_momentum_window: [5, 10, 20]
+  rebound_momentum_threshold: [0.03, 0.05, 0.08]
+  reclaim_ma_window: [10, 20, 50]
+  rebound_position: [1.00, 1.25, 1.50]
+  rebound_hold_days: [5, 10, 20]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/core_overlay_with_rebound
+

@@ -1,0 +1,28 @@
+experiment_name: regime_tqqq
+symbols: [TQQQ, QQQ]
+start_date: "2011-01-01"
+end_date:
+strategy_name: regime
+parameter_grid:
+  trend_windows: [150, 200, 250]
+  momentum_windows: [20, 40]
+  vol_windows: [20, 40]
+  trend_on_levels: [0.0, 0.01]
+  trend_off_levels: [-0.01, 0.0]
+  mom_on_levels: [0.0, 0.02]
+  mom_off_levels: [-0.02, 0.0]
+  vol_caps: [0.018, 0.022, 0.026]
+  risk_on_leverages: [1.00, 1.10, 1.25]
+  risk_off_qqq_positions: [1.0]
+  transition_positions: [0.25, 0.40]
+  min_hold_days_options: [3, 6]
+  cooldown_days_options: [0, 2]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/regime_tqqq

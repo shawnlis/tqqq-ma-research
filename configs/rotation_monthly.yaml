@@ -1,0 +1,27 @@
+﻿experiment_name: rotation_monthly
+symbols: [TQQQ, QQQ, SPY, CASH]
+start_date: "2011-01-01"
+end_date:
+strategy_name: rotation
+parameter_grid:
+  risk_assets: [TQQQ, SOXL, UPRO, TECL]
+  rebalance_frequency: [monthly]
+  top_n: [1, 2]
+  max_asset_weight: [0.50, 1.00]
+  max_total_leveraged_exposure: [1.00, 1.25, 1.50]
+  trend_filter_symbol: [QQQ, SPY]
+  trend_filter_window: [100, 200]
+  defensive_asset: [CASH, SGOV, BIL, QQQ]
+  require_positive_momentum: [true, false]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/rotation_monthly
+use_csv_if_exists: false
+
+

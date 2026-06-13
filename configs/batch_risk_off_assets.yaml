@@ -1,0 +1,266 @@
+﻿batch_name: risk_off_assets
+output_dir: outputs/risk_off_assets
+
+common: &common
+  start_date: "2011-01-01"
+  end_date:
+  benchmark_symbol: TQQQ
+  transaction_cost_bps: 10.0
+  train_years: 5
+  test_years: 1
+  objective: objective_final_ratio
+  objectives:
+    - objective_final_ratio
+    - objective_excess_cagr_with_dd_guard
+  use_csv_if_exists: false
+
+ma_params: &ma_params
+  short: 5
+  long: 50
+  ma_type: ema
+  signal_asset: QQQ
+  threshold: 0.0
+  cooldown_days: 3
+  qqq_filter: true
+  qqq_filter_window: 200
+  risk_off_weight: 1.0
+
+regime_params: &regime_params
+  trend_window: 150
+  momentum_window: 20
+  vol_window: 20
+  trend_on: 0.0
+  trend_off: -0.01
+  mom_on: 0.0
+  mom_off: -0.02
+  vol_cap: 0.022
+  risk_on_leverage: 1.0
+  risk_off_qqq_position: 0.0
+  transition_position: 0.35
+  min_hold_days: 3
+  cooldown_days: 2
+  risk_off_weight: 1.0
+
+core_overlay_params: &core_overlay_params
+  core_exposure: 0.65
+  overlay_max: 0.50
+  max_total_exposure: 1.25
+  trend_window: 150
+  fast_trend_window: 50
+  momentum_window: 63
+  vol_window: 20
+  vol_cap: 0.022
+  crash_cut_exposure: 0.25
+  rebound_boost: false
+  risk_off_weight: 1.0
+
+vol_target_params: &vol_target_params
+  target_ann_vol: 0.75
+  realized_vol_window: 20
+  min_exposure: 0.50
+  max_exposure: 1.50
+  trend_window: 150
+  momentum_window: 63
+  trend_multiplier_below_ma: 0.50
+  momentum_boost: 1.15
+  crash_vol_cutoff: 0.050
+  crash_exposure: 0.25
+  risk_off_weight: 1.0
+
+configs:
+  - <<: *common
+    experiment_name: risk_off_ma_cash
+    symbols: [TQQQ, QQQ, CASH]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: CASH }
+    output_dir: outputs/risk_off_assets/ma_cash
+  - <<: *common
+    experiment_name: risk_off_ma_qqq
+    symbols: [TQQQ, QQQ]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: QQQ }
+    output_dir: outputs/risk_off_assets/ma_qqq
+  - <<: *common
+    experiment_name: risk_off_ma_sgov
+    symbols: [TQQQ, QQQ, SGOV]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: SGOV }
+    output_dir: outputs/risk_off_assets/ma_sgov
+  - <<: *common
+    experiment_name: risk_off_ma_bil
+    symbols: [TQQQ, QQQ, BIL]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: BIL }
+    output_dir: outputs/risk_off_assets/ma_bil
+  - <<: *common
+    experiment_name: risk_off_ma_shy
+    symbols: [TQQQ, QQQ, SHY]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: SHY }
+    output_dir: outputs/risk_off_assets/ma_shy
+  - <<: *common
+    experiment_name: risk_off_ma_ief
+    symbols: [TQQQ, QQQ, IEF]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: IEF }
+    output_dir: outputs/risk_off_assets/ma_ief
+  - <<: *common
+    experiment_name: risk_off_ma_tlt
+    symbols: [TQQQ, QQQ, TLT]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: TLT }
+    output_dir: outputs/risk_off_assets/ma_tlt
+  - <<: *common
+    experiment_name: risk_off_ma_gld
+    symbols: [TQQQ, QQQ, GLD]
+    strategy_name: ma
+    strategy_params: { <<: *ma_params, risk_off_symbol: GLD }
+    output_dir: outputs/risk_off_assets/ma_gld
+
+  - <<: *common
+    experiment_name: risk_off_regime_cash
+    symbols: [TQQQ, QQQ, CASH]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: CASH }
+    output_dir: outputs/risk_off_assets/regime_cash
+  - <<: *common
+    experiment_name: risk_off_regime_qqq
+    symbols: [TQQQ, QQQ]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: QQQ }
+    output_dir: outputs/risk_off_assets/regime_qqq
+  - <<: *common
+    experiment_name: risk_off_regime_sgov
+    symbols: [TQQQ, QQQ, SGOV]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: SGOV }
+    output_dir: outputs/risk_off_assets/regime_sgov
+  - <<: *common
+    experiment_name: risk_off_regime_bil
+    symbols: [TQQQ, QQQ, BIL]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: BIL }
+    output_dir: outputs/risk_off_assets/regime_bil
+  - <<: *common
+    experiment_name: risk_off_regime_shy
+    symbols: [TQQQ, QQQ, SHY]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: SHY }
+    output_dir: outputs/risk_off_assets/regime_shy
+  - <<: *common
+    experiment_name: risk_off_regime_ief
+    symbols: [TQQQ, QQQ, IEF]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: IEF }
+    output_dir: outputs/risk_off_assets/regime_ief
+  - <<: *common
+    experiment_name: risk_off_regime_tlt
+    symbols: [TQQQ, QQQ, TLT]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: TLT }
+    output_dir: outputs/risk_off_assets/regime_tlt
+  - <<: *common
+    experiment_name: risk_off_regime_gld
+    symbols: [TQQQ, QQQ, GLD]
+    strategy_name: regime
+    strategy_params: { <<: *regime_params, risk_off_symbol: GLD }
+    output_dir: outputs/risk_off_assets/regime_gld
+
+  - <<: *common
+    experiment_name: risk_off_core_overlay_cash
+    symbols: [TQQQ, QQQ, CASH]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: CASH }
+    output_dir: outputs/risk_off_assets/core_overlay_cash
+  - <<: *common
+    experiment_name: risk_off_core_overlay_qqq
+    symbols: [TQQQ, QQQ]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: QQQ }
+    output_dir: outputs/risk_off_assets/core_overlay_qqq
+  - <<: *common
+    experiment_name: risk_off_core_overlay_sgov
+    symbols: [TQQQ, QQQ, SGOV]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: SGOV }
+    output_dir: outputs/risk_off_assets/core_overlay_sgov
+  - <<: *common
+    experiment_name: risk_off_core_overlay_bil
+    symbols: [TQQQ, QQQ, BIL]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: BIL }
+    output_dir: outputs/risk_off_assets/core_overlay_bil
+  - <<: *common
+    experiment_name: risk_off_core_overlay_shy
+    symbols: [TQQQ, QQQ, SHY]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: SHY }
+    output_dir: outputs/risk_off_assets/core_overlay_shy
+  - <<: *common
+    experiment_name: risk_off_core_overlay_ief
+    symbols: [TQQQ, QQQ, IEF]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: IEF }
+    output_dir: outputs/risk_off_assets/core_overlay_ief
+  - <<: *common
+    experiment_name: risk_off_core_overlay_tlt
+    symbols: [TQQQ, QQQ, TLT]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: TLT }
+    output_dir: outputs/risk_off_assets/core_overlay_tlt
+  - <<: *common
+    experiment_name: risk_off_core_overlay_gld
+    symbols: [TQQQ, QQQ, GLD]
+    strategy_name: core_overlay
+    strategy_params: { <<: *core_overlay_params, risk_off_symbol: GLD }
+    output_dir: outputs/risk_off_assets/core_overlay_gld
+
+  - <<: *common
+    experiment_name: risk_off_vol_target_cash
+    symbols: [TQQQ, QQQ, CASH]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: CASH }
+    output_dir: outputs/risk_off_assets/vol_target_cash
+  - <<: *common
+    experiment_name: risk_off_vol_target_qqq
+    symbols: [TQQQ, QQQ]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: QQQ }
+    output_dir: outputs/risk_off_assets/vol_target_qqq
+  - <<: *common
+    experiment_name: risk_off_vol_target_sgov
+    symbols: [TQQQ, QQQ, SGOV]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: SGOV }
+    output_dir: outputs/risk_off_assets/vol_target_sgov
+  - <<: *common
+    experiment_name: risk_off_vol_target_bil
+    symbols: [TQQQ, QQQ, BIL]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: BIL }
+    output_dir: outputs/risk_off_assets/vol_target_bil
+  - <<: *common
+    experiment_name: risk_off_vol_target_shy
+    symbols: [TQQQ, QQQ, SHY]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: SHY }
+    output_dir: outputs/risk_off_assets/vol_target_shy
+  - <<: *common
+    experiment_name: risk_off_vol_target_ief
+    symbols: [TQQQ, QQQ, IEF]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: IEF }
+    output_dir: outputs/risk_off_assets/vol_target_ief
+  - <<: *common
+    experiment_name: risk_off_vol_target_tlt
+    symbols: [TQQQ, QQQ, TLT]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: TLT }
+    output_dir: outputs/risk_off_assets/vol_target_tlt
+  - <<: *common
+    experiment_name: risk_off_vol_target_gld
+    symbols: [TQQQ, QQQ, GLD]
+    strategy_name: vol_target
+    strategy_params: { <<: *vol_target_params, risk_off_symbol: GLD }
+    output_dir: outputs/risk_off_assets/vol_target_gld
+

@@ -1,0 +1,35 @@
+﻿experiment_name: vol_target_market_internals
+symbols: [TQQQ, QQQ]
+start_date: "2011-01-01"
+end_date:
+strategy_name: vol_target
+parameter_grid:
+  target_ann_vol: [0.60, 0.75]
+  realized_vol_window: [20, 40]
+  min_exposure: [0.25, 0.50]
+  max_exposure: [1.25, 1.50]
+  trend_window: [150]
+  momentum_window: [63]
+  trend_multiplier_below_ma: [0.50]
+  momentum_boost: [1.15]
+  crash_vol_cutoff: [0.050]
+  crash_exposure: [0.25]
+  risk_off_symbol: [CASH]
+  risk_off_weight: [0.0]
+  use_market_internals: [true]
+  signal_windows: [20, 50, 100, 200]
+  risk_on_threshold: [0.50, 0.60, 0.70]
+  risk_off_threshold: [0.30, 0.40, 0.50]
+  market_internals_components:
+    - [qqq_trend, spy_trend, equal_weight_strength, small_cap_strength, credit_risk, duration_stress, tech_strength, semiconductor_strength, vix_regime]
+    - [qqq_trend, spy_trend, credit_risk, tech_strength, semiconductor_strength, vix_regime]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+objectives:
+  - objective_final_ratio
+  - objective_excess_cagr_with_dd_guard
+output_dir: outputs/vol_target_market_internals
+

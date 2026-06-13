@@ -1,0 +1,88 @@
+﻿batch_name: synthetic_tqqq_long_history_baseline
+output_dir: outputs/synthetic_tqqq_long_history_baseline
+configs:
+  - experiment_name: synthetic_3x_qqq_buy_hold
+    symbols: [QQQ, TQQQ]
+    start_date: "1999-03-10"
+    end_date:
+    strategy_name: buy_and_hold
+    strategy_params: {}
+    benchmark_symbol: TQQQ
+    trade_symbol: TQQQ
+    transaction_cost_bps: 0.0
+    train_years: 5
+    test_years: 1
+    objective: objective_final_ratio
+    objectives:
+      - objective_final_ratio
+      - objective_excess_cagr_with_dd_guard
+    output_dir: outputs/synthetic_tqqq_long_history_baseline/buy_hold
+    use_synthetic_leverage: true
+    synthetic_base_symbol: QQQ
+    synthetic_leverage: 3.0
+    synthetic_expense_ratio: 0.0095
+    synthetic_financing_spread: 0.0
+
+  - experiment_name: synthetic_3x_qqq_ma_existing
+    symbols: [QQQ, TQQQ]
+    start_date: "1999-03-10"
+    end_date:
+    strategy_name: ma
+    parameter_grid:
+      short_range: [3, 5, 8, 13, 20]
+      long_range: [20, 50, 100, 150, 200]
+      ma_types: [sma, ema]
+      signal_assets: [TQQQ, QQQ]
+      thresholds: [0.0, 0.005]
+      cooldown_days_options: [0, 3]
+      qqq_filter_options: [false, true]
+      qqq_filter_windows: [200]
+    benchmark_symbol: TQQQ
+    transaction_cost_bps: 10.0
+    train_years: 5
+    test_years: 1
+    objective: objective_final_ratio
+    objectives:
+      - objective_final_ratio
+      - objective_excess_cagr_with_dd_guard
+    output_dir: outputs/synthetic_tqqq_long_history_baseline/ma_existing
+    use_synthetic_leverage: true
+    synthetic_base_symbol: QQQ
+    synthetic_leverage: 3.0
+    synthetic_expense_ratio: 0.0095
+    synthetic_financing_spread: 0.0
+
+  - experiment_name: synthetic_3x_qqq_regime_existing
+    symbols: [QQQ, TQQQ]
+    start_date: "1999-03-10"
+    end_date:
+    strategy_name: regime
+    parameter_grid:
+      trend_windows: [150, 200, 250]
+      momentum_windows: [20, 40]
+      vol_windows: [20, 40]
+      trend_on_levels: [0.0, 0.01]
+      trend_off_levels: [-0.01, 0.0]
+      mom_on_levels: [0.0, 0.02]
+      mom_off_levels: [-0.02, 0.0]
+      vol_caps: [0.018, 0.022, 0.026]
+      risk_on_leverages: [1.0, 1.1, 1.25]
+      risk_off_qqq_positions: [1.0]
+      transition_positions: [0.25, 0.4]
+      min_hold_days_options: [3, 6]
+      cooldown_days_options: [0, 2]
+    benchmark_symbol: TQQQ
+    transaction_cost_bps: 10.0
+    train_years: 5
+    test_years: 1
+    objective: objective_final_ratio
+    objectives:
+      - objective_final_ratio
+      - objective_excess_cagr_with_dd_guard
+    output_dir: outputs/synthetic_tqqq_long_history_baseline/regime_existing
+    use_synthetic_leverage: true
+    synthetic_base_symbol: QQQ
+    synthetic_leverage: 3.0
+    synthetic_expense_ratio: 0.0095
+    synthetic_financing_spread: 0.0
+

@@ -1,0 +1,94 @@
+pack_name: open_questions
+benchmark_symbol: TQQQ
+output_dir: outputs/open_questions
+
+# Diagnostic baseline. Individual questions can override this where needed
+# such as the early synthetic crash windows.
+start_date: "2011-01-01"
+end_date:
+transaction_cost_bps: 25.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+n_jobs: 1
+
+# Question 1: average exposure floor.
+core_exposure_values: [0.25, 0.50, 0.65, 0.80, 1.00]
+core_overlay_overlay_max: 0.35
+core_overlay_max_total_exposure: 1.25
+core_overlay_trend_window: 150
+core_overlay_fast_trend_window: 50
+core_overlay_momentum_window: 63
+core_overlay_vol_window: 20
+core_overlay_vol_cap: 0.026
+core_overlay_crash_cut_exposure: 0.25
+core_overlay_rebound_boost: false
+
+# Question 2: rebound re-entry.
+rebound_rolling_high_window: 126
+rebound_drawdown_trigger: -0.20
+rebound_momentum_window: 10
+rebound_momentum_threshold: 0.05
+rebound_reclaim_ma_window: 20
+rebound_position: 1.25
+rebound_hold_days: 10
+
+# Question 3: risk-off asset sleeve.
+risk_off_symbols: [CASH, SGOV, BIL, SHY, IEF, TLT, GLD, QQQ]
+
+# Question 4: adaptive leverage.
+adaptive_max_exposures: [1.00, 1.25, 1.50, 2.00]
+vol_target_ann_vol: 0.60
+vol_realized_vol_window: 20
+vol_min_exposure: 0.25
+vol_trend_window: 150
+vol_momentum_window: 63
+vol_trend_multiplier_below_ma: 0.50
+vol_momentum_boost: 1.15
+vol_crash_vol_cutoff: 0.050
+vol_crash_exposure: 0.25
+
+# Question 5: market internals timing.
+market_internals_signal_window: 100
+market_internals_risk_on_threshold: 0.60
+market_internals_risk_off_threshold: 0.40
+
+# Question 6: SOXL and cross-asset rotation.
+soxl_variants:
+  - soxl_core_overlay
+  - soxl_vol_target
+  - soxl_regime
+  - soxl_rotation
+  - rotation_tqqq_soxl_upro
+
+# Question 7: real and synthetic history.
+synthetic_base_symbol: QQQ
+synthetic_leverage: 3.0
+synthetic_expense_ratio: 0.0095
+synthetic_financing_spread: 0.0
+synthetic_periods:
+  - label: real_tqqq_period
+    start_date: "2011-01-01"
+    end_date:
+    use_synthetic: false
+  - label: synthetic_full_qqq_history
+    start_date: "1999-03-10"
+    end_date:
+    use_synthetic: true
+  - label: synthetic_2000_2002
+    start_date: "1999-03-10"
+    end_date: "2002-12-31"
+    use_synthetic: true
+    train_years: 1
+    test_years: 1
+  - label: synthetic_2008
+    start_date: "2003-01-01"
+    end_date: "2008-12-31"
+    use_synthetic: true
+    train_years: 5
+    test_years: 1
+
+# Question 8: anti-overfit validation.
+q8_core_exposures: [0.50, 0.65, 0.80]
+q8_overlay_maxes: [0.35, 0.50]
+bootstrap_iterations: 200

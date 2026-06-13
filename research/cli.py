@@ -30,7 +30,7 @@ from .validation import (
     walk_forward_search_ensemble,
     walk_forward_windows,
 )
-from .audit import audit_config, audit_data
+from .audit import audit_baseline_data, audit_config, audit_data
 from .candidates import extract_final_candidates
 from .comparison import compare_run_files
 from .controlled_runs import summarize_controlled_runs
@@ -530,6 +530,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit_data_parser.add_argument("config_path", help="Path to an experiment, batch, or tournament YAML config.")
 
+    audit_baseline_data_parser = subparsers.add_parser(
+        "audit-baseline-data",
+        help="Audit current TQQQ/QQQ price returns against a legacy stitched baseline.",
+    )
+    audit_baseline_data_parser.add_argument("--old-stitched", required=True, help="Path to legacy stitched equity CSV.")
+    audit_baseline_data_parser.add_argument("--output-dir", required=True, help="Directory for baseline data audit outputs.")
+    audit_baseline_data_parser.add_argument("--start-date", help="Optional old stitched/data start date.")
+    audit_baseline_data_parser.add_argument("--end-date", help="Optional old stitched/data end date.")
+    audit_baseline_data_parser.add_argument("--cache-dir", default="./price_cache", help="Price cache directory.")
+    audit_baseline_data_parser.add_argument("--tolerance", type=float, default=1e-8, help="Return comparison tolerance.")
+
     compare_run = subparsers.add_parser(
         "compare-run",
         help="Compare two stitched run CSVs for baseline numerical equivalence.",
@@ -632,6 +643,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if command == "audit-data":
         audit_data(Path(args.config_path))
+        return 0
+    if command == "audit-baseline-data":
+        audit_baseline_data(
+            old_stitched_path=Path(args.old_stitched),
+            output_dir=Path(args.output_dir),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            cache_dir=args.cache_dir,
+            tolerance=float(args.tolerance),
+        )
         return 0
     if command == "compare-run":
         _, passed = compare_run_files(

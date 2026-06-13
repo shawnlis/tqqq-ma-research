@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .data import CASH_SYMBOL
+from .data import CASH_SYMBOL, load_prices
 from .execution import CLOSE_TO_CLOSE_SHIFTED, has_ohlc, normalize_execution_model
 from .experiments import (
     _asset_config,
@@ -19,11 +19,24 @@ from .experiments import (
     _rotation_symbols_from_config,
     load_yaml_file,
 )
+from .reports import _markdown_table
 
 
 RAW_FINAL_EQUITY_OBJECTIVES = {"objective_final_ratio", "final_equity_ratio"}
 RISK_FIRST_OBJECTIVES = {"sharpe", "calmar", "objective_sharpe", "objective_calmar"}
 HIGH_GRID_WARNING_THRESHOLD = 10000
+BASELINE_RETURN_COLUMNS = [
+    "date",
+    "old_daily_ret_tqqq",
+    "current_daily_ret_tqqq",
+    "tqqq_return_diff",
+    "old_daily_ret_qqq",
+    "current_daily_ret_qqq",
+    "qqq_return_diff",
+    "old_daily_ret",
+    "current_daily_ret",
+    "daily_ret_diff",
+]
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -449,3 +462,312 @@ def audit_data(config_path: Path) -> pd.DataFrame:
     print(f"\nData audit written to: {output_dir / 'audit_data_summary.csv'}")
     return summary
 
+
+def _read_date_indexed_csv(path: Path) -> pd.DataFrame:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"CSV file does not exist: {path}")
+    raw = pd.read_csv(path)
+    if raw.empty:
+        raise ValueError(f"CSV file is empty: {path}")
+    date_column = None
+    for candidate in ("Date", "date", "Datetime", "datetime"):
+        if candidate in raw.columns:
+            date_column = candidate
+            break
+    if date_column is None:
+        date_column = raw.columns[0]
+    raw[date_column] = pd.to_datetime(raw[date_column], errors="coerce")
+    if raw[date_column].isna().any():
+        raise ValueError(f"Could not parse date column {date_column}: {path}")
+    out = raw.set_index(date_column).sort_index()
+    out.index.name = "Date"
+    return out
+
+
+def _date_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return pd.Timestamp(value).date().isoformat()
+
+
+def _baseline_cache_path(cache_dir: str) -> Path:
+    return Path(cache_dir) / "tqqq_qqq_prices.csv"
+
+
+def _load_baseline_prices(
+    *,
+    old: pd.DataFrame,
+    start_date: str | None,
+    end_date: str | None,
+    cache_dir: str,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    cache_path = _baseline_cache_path(cache_dir)
+    cache_exists_before = cache_path.exists()
+    cache_start = ""
+    cache_end = ""
+    cache_rows = 0
+    if cache_exists_before:
+        try:
+            cached = pd.read_csv(cache_path, parse_dates=["Date"]).set_index("Date").sort_index()
+            cache_start = _date_text(cached.index.min()) if not cached.empty else ""
+            cache_end = _date_text(cached.index.max()) if not cached.empty else ""
+            cache_rows = int(len(cached))
+        except Exception:
+            cache_start = ""
+            cache_end = ""
+            cache_rows = 0
+
+    old_start = pd.Timestamp(old.index.min())
+    old_end = pd.Timestamp(old.index.max())
+    load_start = str(pd.Timestamp(start_date).date()) if start_date else str((old_start - pd.Timedelta(days=10)).date())
+    load_end = str(pd.Timestamp(end_date).date()) if end_date else str(old_end.date())
+
+    prices = load_prices(
+        start=load_start,
+        end=load_end,
+        symbols=("TQQQ", "QQQ"),
+        use_csv_if_exists=True,
+        cache_dir=cache_dir,
+        include_ohlc=False,
+    )
+    cache_exists_after = cache_path.exists()
+    yfinance_download_occurred = bool(not cache_exists_before and cache_exists_after)
+    cached_data_sliced = False
+    if cache_exists_before and not prices.empty:
+        price_start = _date_text(prices.index.min())
+        price_end = _date_text(prices.index.max())
+        cached_data_sliced = bool(
+            cache_rows > len(prices)
+            or (cache_start and price_start and price_start > cache_start)
+            or (cache_end and price_end and price_end < cache_end)
+        )
+
+    metadata = {
+        "cache_path_used": str(cache_path),
+        "yfinance_download_occurred": yfinance_download_occurred,
+        "cached_data_sliced_by_start_end": cached_data_sliced,
+        "load_start": load_start,
+        "load_end": load_end,
+    }
+    return prices, metadata
+
+
+def _numeric_series(df: pd.DataFrame, column: str, index: pd.Index) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(index=index, dtype=float)
+    return pd.to_numeric(df.loc[index, column], errors="coerce").astype(float)
+
+
+def _max_abs_return_diff(old: pd.Series, current: pd.Series) -> float:
+    diff = (old - current).abs().replace([np.inf, -np.inf], np.nan).dropna()
+    return float(diff.max()) if not diff.empty else np.nan
+
+
+def _first_return_diff_date(old: pd.Series, current: pd.Series, tolerance: float) -> str:
+    diff = (old - current).abs().replace([np.inf, -np.inf], np.nan)
+    diff = diff.dropna()
+    if diff.empty:
+        return ""
+    differing = diff[diff > float(tolerance)]
+    if differing.empty:
+        return ""
+    return _date_text(differing.index[0])
+
+
+def _build_baseline_return_comparison(
+    old: pd.DataFrame,
+    prices: pd.DataFrame,
+    tolerance: float,
+) -> Tuple[Dict[str, Any], pd.DataFrame, List[str]]:
+    common_index = old.index.intersection(prices.index)
+    current_tqqq = prices["TQQQ"].pct_change().reindex(common_index)
+    current_qqq = prices["QQQ"].pct_change().reindex(common_index)
+
+    old_tqqq = _numeric_series(old, "daily_ret_tqqq", common_index)
+    old_qqq = _numeric_series(old, "daily_ret_qqq", common_index)
+    old_daily = _numeric_series(old, "daily_ret", common_index)
+    old_tqqq_weight = _numeric_series(old, "tqqq_weight", common_index)
+    old_qqq_weight = _numeric_series(old, "qqq_weight", common_index)
+    current_daily = old_tqqq_weight * current_tqqq + old_qqq_weight * current_qqq
+
+    warnings: List[str] = []
+    compared: List[Tuple[str, pd.Series, pd.Series]] = []
+    if "daily_ret_tqqq" in old.columns:
+        compared.append(("tqqq", old_tqqq, current_tqqq))
+    else:
+        warnings.append("old stitched file lacks daily_ret_tqqq")
+    if "daily_ret_qqq" in old.columns:
+        compared.append(("qqq", old_qqq, current_qqq))
+    else:
+        warnings.append("old stitched file lacks daily_ret_qqq")
+    if "daily_ret" in old.columns and {"tqqq_weight", "qqq_weight"}.issubset(old.columns):
+        compared.append(("daily_ret", old_daily, current_daily))
+    elif "daily_ret" in old.columns:
+        warnings.append("old stitched file has daily_ret but lacks weights needed for current weighted return")
+    else:
+        warnings.append("old stitched file lacks daily_ret")
+
+    limited = not {"daily_ret_tqqq", "daily_ret_qqq"}.issubset(old.columns)
+    if limited:
+        warnings.append("return-level data audit is limited")
+
+    max_tqqq_diff = _max_abs_return_diff(old_tqqq, current_tqqq) if "daily_ret_tqqq" in old.columns else np.nan
+    max_qqq_diff = _max_abs_return_diff(old_qqq, current_qqq) if "daily_ret_qqq" in old.columns else np.nan
+    max_daily_diff = (
+        _max_abs_return_diff(old_daily, current_daily)
+        if "daily_ret" in old.columns and {"tqqq_weight", "qqq_weight"}.issubset(old.columns)
+        else np.nan
+    )
+    first_tqqq = _first_return_diff_date(old_tqqq, current_tqqq, tolerance) if "daily_ret_tqqq" in old.columns else ""
+    first_qqq = _first_return_diff_date(old_qqq, current_qqq, tolerance) if "daily_ret_qqq" in old.columns else ""
+    first_daily = (
+        _first_return_diff_date(old_daily, current_daily, tolerance)
+        if "daily_ret" in old.columns and {"tqqq_weight", "qqq_weight"}.issubset(old.columns)
+        else ""
+    )
+
+    if not compared:
+        match_status = "limited"
+    else:
+        diffs = [_max_abs_return_diff(old_series, current_series) for _, old_series, current_series in compared]
+        all_match = all(pd.notna(diff) and diff <= float(tolerance) for diff in diffs)
+        if not all_match:
+            match_status = "no"
+        elif limited:
+            match_status = "limited"
+        else:
+            match_status = "yes"
+
+    difference_rows = []
+    for idx in common_index:
+        values = {
+            "date": _date_text(idx),
+            "old_daily_ret_tqqq": old_tqqq.get(idx, np.nan),
+            "current_daily_ret_tqqq": current_tqqq.get(idx, np.nan),
+            "old_daily_ret_qqq": old_qqq.get(idx, np.nan),
+            "current_daily_ret_qqq": current_qqq.get(idx, np.nan),
+            "old_daily_ret": old_daily.get(idx, np.nan),
+            "current_daily_ret": current_daily.get(idx, np.nan),
+        }
+        values["tqqq_return_diff"] = values["old_daily_ret_tqqq"] - values["current_daily_ret_tqqq"]
+        values["qqq_return_diff"] = values["old_daily_ret_qqq"] - values["current_daily_ret_qqq"]
+        values["daily_ret_diff"] = values["old_daily_ret"] - values["current_daily_ret"]
+        material = any(
+            pd.notna(values[column]) and abs(float(values[column])) > float(tolerance)
+            for column in ("tqqq_return_diff", "qqq_return_diff", "daily_ret_diff")
+        )
+        if material:
+            difference_rows.append(values)
+            if len(difference_rows) >= 20:
+                break
+
+    first_differences = pd.DataFrame(difference_rows, columns=BASELINE_RETURN_COLUMNS)
+    fields = {
+        "common_rows": int(len(common_index)),
+        "max_abs_tqqq_return_diff": max_tqqq_diff,
+        "max_abs_qqq_return_diff": max_qqq_diff,
+        "max_abs_daily_ret_diff": max_daily_diff,
+        "first_tqqq_return_diff_date": first_tqqq,
+        "first_qqq_return_diff_date": first_qqq,
+        "first_daily_ret_diff_date": first_daily,
+        "current_data_matches_old_baseline_returns": match_status,
+        "return_level_audit_limited": limited,
+        "warnings": "; ".join(dict.fromkeys(warnings)),
+    }
+    return fields, first_differences, warnings
+
+
+def _write_baseline_data_audit_report(
+    *,
+    output_dir: Path,
+    summary: pd.DataFrame,
+    first_differences: pd.DataFrame,
+    old_stitched_path: Path,
+) -> Path:
+    report_path = output_dir / "baseline_data_audit_report.md"
+    status = str(summary["current_data_matches_old_baseline_returns"].iloc[0]) if not summary.empty else "unknown"
+    lines = [
+        "# Baseline Price And Return Audit",
+        "",
+        f"- Old stitched file: `{old_stitched_path}`",
+        f"- Current data matches old baseline returns: `{status}`",
+        "",
+        "## Summary",
+        _markdown_table(summary, max_rows=5),
+        "",
+        "## First Return Differences",
+        _markdown_table(first_differences, max_rows=20),
+        "",
+    ]
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
+
+
+def audit_baseline_data(
+    *,
+    old_stitched_path: Path,
+    output_dir: Path,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    cache_dir: str = "./price_cache",
+    tolerance: float = 1e-8,
+) -> pd.DataFrame:
+    old_stitched_path = Path(old_stitched_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    old = _read_date_indexed_csv(old_stitched_path)
+    if start_date:
+        old = old.loc[old.index >= pd.Timestamp(start_date)].copy()
+    if end_date:
+        old = old.loc[old.index <= pd.Timestamp(end_date)].copy()
+    if old.empty:
+        raise ValueError("Old stitched file has no rows after applying start/end filters.")
+
+    prices, metadata = _load_baseline_prices(
+        old=old,
+        start_date=start_date,
+        end_date=end_date,
+        cache_dir=cache_dir,
+    )
+    fields, first_differences, _ = _build_baseline_return_comparison(
+        old=old,
+        prices=prices,
+        tolerance=float(tolerance),
+    )
+    summary = pd.DataFrame(
+        [
+            {
+                "old_start": _date_text(old.index.min()),
+                "old_end": _date_text(old.index.max()),
+                "current_price_start": _date_text(prices.index.min()) if not prices.empty else "",
+                "current_price_end": _date_text(prices.index.max()) if not prices.empty else "",
+                **fields,
+                "cache_path_used": metadata["cache_path_used"],
+                "yfinance_download_occurred": metadata["yfinance_download_occurred"],
+                "cached_data_sliced_by_start_end": metadata["cached_data_sliced_by_start_end"],
+                "data_load_start": metadata["load_start"],
+                "data_load_end": metadata["load_end"],
+                "tolerance": float(tolerance),
+            }
+        ]
+    )
+
+    summary.to_csv(output_dir / "baseline_data_audit_summary.csv", index=False)
+    first_differences.to_csv(output_dir / "first_return_differences.csv", index=False)
+    _write_baseline_data_audit_report(
+        output_dir=output_dir,
+        summary=summary,
+        first_differences=first_differences,
+        old_stitched_path=old_stitched_path,
+    )
+
+    print(summary.to_string(index=False))
+    print(f"\nBaseline data audit written to: {output_dir / 'baseline_data_audit_report.md'}")
+    return summary

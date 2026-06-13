@@ -32,6 +32,7 @@ from .validation import (
 from .audit import audit_config, audit_data
 from .candidates import extract_final_candidates
 from .comparison import compare_run_files
+from .controlled_runs import summarize_controlled_runs
 from .open_questions import run_open_questions_config
 from .tournament import run_tournament_config
 
@@ -520,6 +521,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for compare_run_summary.csv and compare_run_report.md.",
     )
 
+    controlled_runs = subparsers.add_parser(
+        "summarize-controlled-runs",
+        help="Summarize controlled real-data runs and classify raw TQQQ outperformance.",
+    )
+    controlled_runs.add_argument(
+        "--output-dir",
+        default="outputs/controlled_runs",
+        help="Directory for controlled_run_summary.csv and controlled_run_report.md.",
+    )
+
     return parser
 
 
@@ -567,6 +578,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             output_dir=Path(args.output_dir),
         )
         return 0 if passed else 1
+    if command == "summarize-controlled-runs":
+        summarize_controlled_runs(output_dir=Path(args.output_dir))
+        return 0
 
     parser.error(f"Unsupported command: {command}")
     return 2

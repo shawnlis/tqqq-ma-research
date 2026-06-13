@@ -78,8 +78,11 @@ def test_summarize_controlled_runs_classifies_raw_failure_and_missing_output(tmp
     )
 
     classifications = dict(zip(summary["strategy_config"], summary["classification"]))
-    assert classifications["raw_fail"] == "Reject for raw outperformance"
-    assert classifications["missing"] == "Data/config failure"
+    assert classifications["raw_fail"] == "empirical rejection"
+    assert classifications["missing"] == "infrastructure failure"
+    contracts = dict(zip(summary["strategy_config"], summary["output_contract_status"]))
+    assert contracts["raw_fail"] == "pass"
+    assert contracts["missing"] == "missing_same_period_benchmark_summary"
     assert (tmp_path / "controlled" / "controlled_run_summary.csv").exists()
     assert (tmp_path / "controlled" / "controlled_run_report.md").exists()
 
@@ -113,10 +116,11 @@ def test_summarize_controlled_runs_identifies_candidate_and_audits(tmp_path: Pat
     )
 
     row = summary.iloc[0]
-    assert row["classification"] == "Candidate for full validation"
+    assert row["classification"] == "candidate for tournament_gate validation"
     assert row["benchmark_date_alignment"] == "pass"
     assert row["position_shift_audit"] == "shifted_execution_model"
     assert row["transaction_cost_audit"] == "costs_present"
+    assert row["output_contract_status"] == "pass"
     assert row["objective_used"] == "objective_final_ratio"
     assert not bool(row["one_year_drives_excess_return"])
 
@@ -126,4 +130,5 @@ def test_summarize_controlled_runs_cli_writes_default_report(tmp_path: Path, mon
     assert main(["summarize-controlled-runs", "--output-dir", str(tmp_path / "controlled")]) == 0
     summary = pd.read_csv(tmp_path / "controlled" / "controlled_run_summary.csv")
     assert len(summary) == 5
-    assert set(summary["classification"]) == {"Data/config failure"}
+    assert set(summary["classification"]) == {"infrastructure failure"}
+    assert set(summary["output_contract_status"]) == {"missing_same_period_benchmark_summary"}

@@ -14,6 +14,8 @@ from .reports import _markdown_table
 
 SUMMARY_COLUMNS = [
     "strategy_config",
+    "config_name",
+    "strategy_name",
     "config_path",
     "output_dir",
     "status",
@@ -36,6 +38,7 @@ SUMMARY_COLUMNS = [
     "benchmark_date_alignment",
     "position_shift_audit",
     "transaction_cost_audit",
+    "output_contract_status",
     "dominant_excess_year",
     "dominant_excess_year_share",
     "one_year_drives_excess_return",
@@ -150,6 +153,24 @@ def _cost_from_metadata(run_config: Dict[str, Any], config: Dict[str, Any]) -> f
     return float("nan")
 
 
+def _config_name(spec: ControlledRunSpec, config: Dict[str, Any]) -> str:
+    value = config.get("experiment_name")
+    if value:
+        return str(value)
+    if spec.config_path:
+        return Path(spec.config_path).stem
+    return spec.strategy_config
+
+
+def _strategy_name(spec: ControlledRunSpec, config: Dict[str, Any]) -> str:
+    value = config.get("strategy_name")
+    if value:
+        return str(value)
+    if spec.strategy_config == "run-existing-regime":
+        return "existing_regime"
+    return ""
+
+
 def _read_first_summary(path: Path) -> Dict[str, Any]:
     summary = pd.read_csv(path)
     if summary.empty:
@@ -255,23 +276,32 @@ def _yearly_stats(
 
 def _classify(final_equity_ratio: float, raw_pass: bool, status: str, audit_notes: Sequence[str]) -> str:
     if status != "ok":
-        return "Data/config failure"
+        return "infrastructure failure"
     if raw_pass or final_equity_ratio > 1.0:
         if any(note.startswith("audit_fail") for note in audit_notes):
-            return "Interesting but not enough"
-        return "Candidate for full validation"
+            return "interesting but insufficient"
+        return "candidate for tournament_gate validation"
     if pd.notna(final_equity_ratio) and final_equity_ratio >= 0.95:
-        return "Interesting but not enough"
-    return "Reject for raw outperformance"
+        return "interesting but insufficient"
+    return "empirical rejection"
 
 
-def _failure_row(spec: ControlledRunSpec, summary_path: Path, reason: str) -> Dict[str, Any]:
+def _failure_row(
+    spec: ControlledRunSpec,
+    summary_path: Path,
+    reason: str,
+    *,
+    output_contract_status: str,
+) -> Dict[str, Any]:
+    config = _read_mapping(spec.config_path)
     return {
         "strategy_config": spec.strategy_config,
+        "config_name": _config_name(spec, config),
+        "strategy_name": _strategy_name(spec, config),
         "config_path": str(spec.config_path or ""),
         "output_dir": str(spec.output_dir),
-        "status": "missing_summary",
-        "classification": "Data/config failure",
+        "status": output_contract_status,
+        "classification": "infrastructure failure",
         "date_range": "",
         "start_date": "",
         "end_date": "",
@@ -290,6 +320,7 @@ def _failure_row(spec: ControlledRunSpec, summary_path: Path, reason: str) -> Di
         "benchmark_date_alignment": "not_available",
         "position_shift_audit": "not_available",
         "transaction_cost_audit": "not_available",
+        "output_contract_status": output_contract_status,
         "dominant_excess_year": "",
         "dominant_excess_year_share": np.nan,
         "one_year_drives_excess_return": False,
@@ -301,12 +332,22 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
     output_dir = Path(spec.output_dir)
     summary_path = output_dir / spec.summary_filename
     if not summary_path.exists():
-        return _failure_row(spec, summary_path, "missing same-period benchmark summary")
+        return _failure_row(
+            spec,
+            summary_path,
+            "missing same-period benchmark summary",
+            output_contract_status="missing_same_period_benchmark_summary",
+        )
 
     try:
         summary = _read_first_summary(summary_path)
     except Exception as exc:
-        return _failure_row(spec, summary_path, f"invalid same-period benchmark summary ({exc})")
+        return _failure_row(
+            spec,
+            summary_path,
+            f"invalid same-period benchmark summary ({exc})",
+            output_contract_status="invalid_same_period_benchmark_summary",
+        )
 
     run_config = _read_mapping(output_dir / spec.run_config_filename)
     config = _read_mapping(spec.config_path)
@@ -315,6 +356,7 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
     yearly_path = _first_existing(output_dir, spec.yearly_filenames)
     stitched_path = _first_existing(output_dir, spec.stitched_filenames)
     yearly_wins, total_years, dominant_year, dominant_share, one_year_drives = _yearly_stats(yearly_path, summary)
+    output_contract_status = "pass" if stitched_path is not None and stitched_path.exists() else "missing_stitched_equity"
 
     final_equity_ratio = _as_float(summary.get("final_equity_ratio"))
     raw_pass = _as_bool(summary.get("raw_outperformance_pass")) or (
@@ -325,6 +367,9 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
     cost_audit = _transaction_cost_audit(stitched_path, transaction_cost_bps) if raw_pass else "not_audited_raw_fail"
 
     audit_notes: List[str] = []
+    status = "ok" if output_contract_status == "pass" else output_contract_status
+    if output_contract_status != "pass":
+        audit_notes.append(f"audit_fail: {output_contract_status}")
     if raw_pass and date_alignment != "pass":
         audit_notes.append("audit_fail: benchmark date alignment")
     if raw_pass and position_audit not in {"shifted_execution_model", "position_columns_present_review_code_for_shift"}:
@@ -334,7 +379,6 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
     if raw_pass and one_year_drives:
         audit_notes.append("audit_fail: one year drives excess return")
 
-    status = "ok"
     classification = _classify(final_equity_ratio, raw_pass, status, audit_notes)
     start_date = str(summary.get("start_date", ""))
     end_date = str(summary.get("end_date", ""))
@@ -344,6 +388,8 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
 
     return {
         "strategy_config": spec.strategy_config,
+        "config_name": _config_name(spec, config),
+        "strategy_name": _strategy_name(spec, config),
         "config_path": str(spec.config_path or ""),
         "output_dir": str(output_dir),
         "status": status,
@@ -366,6 +412,7 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
         "benchmark_date_alignment": date_alignment,
         "position_shift_audit": position_audit,
         "transaction_cost_audit": cost_audit,
+        "output_contract_status": output_contract_status,
         "dominant_excess_year": dominant_year,
         "dominant_excess_year_share": dominant_share,
         "one_year_drives_excess_return": one_year_drives,
@@ -375,10 +422,10 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
 
 def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
     report_path = output_dir / "controlled_run_report.md"
-    candidates = summary[summary["classification"].eq("Candidate for full validation")]
-    failures = summary[summary["classification"].eq("Data/config failure")]
-    raw_rejects = summary[summary["classification"].eq("Reject for raw outperformance")]
-    interesting = summary[summary["classification"].eq("Interesting but not enough")]
+    candidates = summary[summary["classification"].eq("candidate for tournament_gate validation")]
+    failures = summary[summary["classification"].eq("infrastructure failure")]
+    raw_rejects = summary[summary["classification"].eq("empirical rejection")]
+    interesting = summary[summary["classification"].eq("interesting but insufficient")]
 
     lines = [
         "# Controlled Real-Data Run Summary",
@@ -394,6 +441,8 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
             summary,
             columns=[
                 "strategy_config",
+                "config_name",
+                "strategy_name",
                 "classification",
                 "date_range",
                 "strategy_final_equity",
@@ -405,6 +454,7 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
                 "yearly_wins",
                 "total_years",
                 "raw_outperformance_pass",
+                "output_contract_status",
                 "objective_used",
                 "transaction_cost_bps",
                 "notes",
@@ -429,9 +479,12 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
                     candidates,
                     columns=[
                         "strategy_config",
+                        "config_name",
+                        "strategy_name",
                         "benchmark_date_alignment",
                         "position_shift_audit",
                         "transaction_cost_audit",
+                        "output_contract_status",
                         "objective_used",
                         "dominant_excess_year",
                         "dominant_excess_year_share",
@@ -454,21 +507,30 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
             "## Raw Rejections",
             _markdown_table(
                 raw_rejects,
-                columns=["strategy_config", "final_equity_ratio", "excess_cagr", "strategy_max_dd", "benchmark_max_dd"],
+                columns=[
+                    "strategy_config",
+                    "config_name",
+                    "strategy_name",
+                    "final_equity_ratio",
+                    "excess_cagr",
+                    "strategy_max_dd",
+                    "benchmark_max_dd",
+                    "output_contract_status",
+                ],
                 max_rows=50,
             ),
             "",
-            "## Interesting But Not Enough",
+            "## Interesting But Insufficient",
             _markdown_table(
                 interesting,
-                columns=["strategy_config", "final_equity_ratio", "notes"],
+                columns=["strategy_config", "config_name", "strategy_name", "final_equity_ratio", "output_contract_status", "notes"],
                 max_rows=50,
             ),
             "",
-            "## Data Or Config Failures",
+            "## Infrastructure Failures",
             _markdown_table(
                 failures,
-                columns=["strategy_config", "output_dir", "notes"],
+                columns=["strategy_config", "config_name", "strategy_name", "output_dir", "output_contract_status", "notes"],
                 max_rows=50,
             ),
             "",

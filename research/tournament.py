@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .baseline_gate import enforce_baseline_gate
 from .experiments import _load_price_data, _run_walk_forward, estimate_experiment_workload, load_yaml_file
 from .reports import compare_to_benchmark, generate_tournament_report
 
@@ -538,6 +539,7 @@ def run_tournament_config(
     max_configs: Optional[int] = None,
     dry_run: bool = False,
     allow_long_run: bool = False,
+    accept_baseline_regression: bool = False,
 ) -> pd.DataFrame:
     tournament_path = Path(tournament_path)
     tournament_config = load_yaml_file(tournament_path)
@@ -567,6 +569,11 @@ def run_tournament_config(
         print(summary.to_string(index=False))
         print(f"\nDry-run summary written to: {output_dir / 'tournament_dry_run_summary.csv'}")
         return summary
+
+    enforce_baseline_gate(
+        accept_baseline_regression=accept_baseline_regression,
+        action="running a full tournament",
+    )
 
     guard_summary = _tournament_dry_run_rows(
         tournament_path=tournament_path,

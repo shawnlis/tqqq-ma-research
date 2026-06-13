@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .baseline_gate import enforce_baseline_gate
 from .experiments import load_yaml_file
 from .reports import _markdown_table
 
@@ -391,7 +392,15 @@ def _strategy_groups(variant_results: pd.DataFrame) -> Iterable[Tuple[Tuple[Any,
     yield from variant_results.groupby(group_cols, dropna=False)
 
 
-def extract_final_candidates(tournament_dir: Path) -> pd.DataFrame:
+def extract_final_candidates(
+    tournament_dir: Path,
+    *,
+    accept_baseline_regression: bool = False,
+) -> pd.DataFrame:
+    enforce_baseline_gate(
+        accept_baseline_regression=accept_baseline_regression,
+        action="extracting final candidates",
+    )
     tournament_dir = Path(tournament_dir)
     summary_path = tournament_dir / "tournament_summary.csv"
     variant_results_path = tournament_dir / "tournament_variant_results.csv"

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .data import load_prices
+from .baseline_gate import check_blockers, create_baseline_regression_report
 from .experiments import dry_run_experiment_config, run_batch_config, run_experiment_config
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
@@ -504,6 +505,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow a full tournament whose estimated runtime exceeds the configured safety threshold.",
     )
+    run_tournament.add_argument(
+        "--accept-baseline-regression",
+        action="store_true",
+        help="Proceed despite BASELINE_GATE_FAILED.txt after explicitly accepting the baseline regression.",
+    )
 
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
@@ -518,6 +524,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extract final candidates from an existing tournament output directory.",
     )
     extract_candidates.add_argument("tournament_dir", help="Path to a tournament output directory.")
+    extract_candidates.add_argument(
+        "--accept-baseline-regression",
+        action="store_true",
+        help="Proceed despite BASELINE_GATE_FAILED.txt after explicitly accepting the baseline regression.",
+    )
+
+    check_blockers_parser = subparsers.add_parser(
+        "check-blockers",
+        help="Check hard research blockers before launching downstream runs.",
+    )
+    check_blockers_parser.set_defaults(command="check-blockers")
 
     audit_config_parser = subparsers.add_parser(
         "audit-config",
@@ -594,6 +611,43 @@ def build_parser() -> argparse.ArgumentParser:
     audit_regime_allocation_parser.add_argument("--data-csv", help="Optional fixture CSV with Date, TQQQ, and QQQ columns.")
     audit_regime_allocation_parser.add_argument("--cache-dir", default="./price_cache", help="Price cache directory.")
 
+    baseline_regression = subparsers.add_parser(
+        "baseline-regression-report",
+        help="Create baseline regression summary/report and write BASELINE_GATE_FAILED.txt unless equivalence passes.",
+    )
+    baseline_regression.add_argument("--output-dir", default="outputs/baseline_regression")
+    baseline_regression.add_argument(
+        "--compare-summary",
+        default="outputs/comparison/baseline_clipped/compare_run_summary.csv",
+        help="Matched-date compare-run summary CSV.",
+    )
+    baseline_regression.add_argument(
+        "--replay-summary",
+        default="outputs/replay/v10_regime_windows/replay_compare_summary.csv",
+        help="Legacy replay summary CSV.",
+    )
+    baseline_regression.add_argument(
+        "--replay-params",
+        default="outputs/replay/v10_regime_windows/window_param_replay.csv",
+        help="Legacy replay selected-parameter CSV.",
+    )
+    baseline_regression.add_argument(
+        "--old-windows",
+        default="ma_search_output_v10/regime_walk_forward_windows.csv",
+        help="Old v10 selected window CSV.",
+    )
+    baseline_regression.add_argument(
+        "--baseline-data-summary",
+        default="outputs/comparison/baseline_data_audit/baseline_data_audit_summary.csv",
+        help="Baseline price/return audit summary CSV.",
+    )
+    baseline_regression.add_argument(
+        "--allocation-summary",
+        default="outputs/comparison/regime_allocation_audit/regime_allocation_audit_summary.csv",
+        help="Regime allocation audit summary CSV.",
+    )
+    baseline_regression.add_argument("--tolerance", type=float, default=1e-8)
+
     return parser
 
 
@@ -635,6 +689,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 max_configs=args.max_configs,
                 dry_run=args.dry_run,
                 allow_long_run=args.allow_long_run,
+                accept_baseline_regression=args.accept_baseline_regression,
             )
             return 0
         except RuntimeError as exc:
@@ -649,11 +704,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if command == "extract-candidates":
         try:
-            extract_final_candidates(Path(args.tournament_dir))
+            extract_final_candidates(
+                Path(args.tournament_dir),
+                accept_baseline_regression=args.accept_baseline_regression,
+            )
             return 0
-        except (FileNotFoundError, ValueError) as exc:
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
+    if command == "check-blockers":
+        summary = check_blockers()
+        failed = summary["status"].astype(str).str.lower().eq("failed").any()
+        return 1 if failed else 0
     if command == "audit-config":
         audit_config(Path(args.config_path))
         return 0
@@ -707,6 +769,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             execution_model=args.execution_model,
             data_csv=Path(args.data_csv) if args.data_csv else None,
             cache_dir=args.cache_dir,
+        )
+        return 0
+    if command == "baseline-regression-report":
+        create_baseline_regression_report(
+            output_dir=Path(args.output_dir),
+            compare_summary_path=Path(args.compare_summary),
+            replay_summary_path=Path(args.replay_summary),
+            replay_params_path=Path(args.replay_params),
+            old_windows_path=Path(args.old_windows),
+            baseline_data_summary_path=Path(args.baseline_data_summary),
+            allocation_summary_path=Path(args.allocation_summary),
+            tolerance=float(args.tolerance),
         )
         return 0
 

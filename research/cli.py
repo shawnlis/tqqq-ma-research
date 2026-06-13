@@ -31,6 +31,7 @@ from .validation import (
 )
 from .audit import audit_config, audit_data
 from .candidates import extract_final_candidates
+from .comparison import compare_run_files
 from .open_questions import run_open_questions_config
 from .tournament import run_tournament_config
 
@@ -506,6 +507,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit_data_parser.add_argument("config_path", help="Path to an experiment, batch, or tournament YAML config.")
 
+    compare_run = subparsers.add_parser(
+        "compare-run",
+        help="Compare two stitched run CSVs for baseline numerical equivalence.",
+    )
+    compare_run.add_argument("--old", required=True, help="Path to the old baseline CSV.")
+    compare_run.add_argument("--new", required=True, help="Path to the new run CSV.")
+    compare_run.add_argument("--tolerance", type=float, default=1e-8, help="Absolute tolerance for numeric comparisons.")
+    compare_run.add_argument(
+        "--output-dir",
+        default="outputs/comparison",
+        help="Directory for compare_run_summary.csv and compare_run_report.md.",
+    )
+
     return parser
 
 
@@ -545,6 +559,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command == "audit-data":
         audit_data(Path(args.config_path))
         return 0
+    if command == "compare-run":
+        _, passed = compare_run_files(
+            Path(args.old),
+            Path(args.new),
+            tolerance=float(args.tolerance),
+            output_dir=Path(args.output_dir),
+        )
+        return 0 if passed else 1
 
     parser.error(f"Unsupported command: {command}")
     return 2

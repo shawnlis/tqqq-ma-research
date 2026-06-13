@@ -111,3 +111,38 @@ def test_run_tournament_records_rankings_and_failures(tmp_path: Path) -> None:
     assert "Bad Strategy" in set(failures["family"])
     assert "failed_run" in set(failures["record_type"])
     assert "rejected_strategy" in set(failures["record_type"])
+
+
+def test_run_tournament_dry_run_respects_max_configs(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_paths = []
+    for name in ["first", "second", "third"]:
+        config_path = tmp_path / f"{name}.yaml"
+        config_path.write_text(yaml.safe_dump(_ma_config(tmp_path, name)), encoding="utf-8")
+        config_paths.append(config_path)
+
+    tournament_path = tmp_path / "tournament_dry.yaml"
+    tournament_path.write_text(
+        yaml.safe_dump(
+            {
+                "tournament_name": "tiny_tournament_dry",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(tmp_path / "tournament_dry_out"),
+                "strategies": [
+                    {"family": f"Family {idx}", "category": "tqqq", "config": str(path)}
+                    for idx, path in enumerate(config_paths)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-tournament", str(tournament_path), "--dry-run", "--max-configs", "2"]) == 0
+
+    captured = capsys.readouterr()
+    assert "estimated_evaluations" in captured.out
+    summary = pd.read_csv(tmp_path / "tournament_dry_out" / "tournament_dry_run_summary.csv")
+    assert len(summary) == 2
+    assert summary["tournament_total_configs"].iloc[0] == 3
+    assert summary["tournament_selected_configs"].iloc[0] == 2
+    assert not (tmp_path / "first" / "stitched_equity.csv").exists()

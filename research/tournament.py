@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from .experiments import _load_price_data, _run_walk_forward, load_yaml_file
+from .experiments import _load_price_data, _run_walk_forward, estimate_experiment_workload, load_yaml_file
 from .reports import compare_to_benchmark, generate_tournament_report
 
 
@@ -49,6 +50,12 @@ SUMMARY_COLUMNS = [
     "accepted_candidate",
     "rejection_reason",
     "output_dir",
+    "estimated_parameter_combinations",
+    "estimated_walk_forward_windows",
+    "estimated_evaluations",
+    "estimated_runtime_seconds",
+    "actual_runtime_seconds",
+    "actual_seconds_per_estimated_evaluation",
 ]
 
 
@@ -135,6 +142,11 @@ def _run_tournament_variant(
     variant_config["transaction_cost_bps"] = float(cost_bps)
     variant_config["anti_overfit_validation"] = {"enabled": False}
     variant_name = _variant_name(wf_variant, cost_bps)
+    estimate = estimate_experiment_workload(
+        variant_config,
+        include_full_experiment_overhead=False,
+    )
+    started = time.perf_counter()
 
     row: Dict[str, Any] = {
         "family": family,
@@ -152,13 +164,22 @@ def _run_tournament_variant(
         "transaction_cost_bps": float(cost_bps),
         "status": "error",
         "error": "",
+        **estimate,
     }
 
     try:
         wf_table, stitched, grid_size = _run_walk_forward(variant_config, data)
+        actual_runtime_seconds = time.perf_counter() - started
         row["grid_size"] = int(grid_size)
         row["walk_forward_windows"] = int(len(wf_table))
         row["stitched_rows"] = int(len(stitched))
+        row["actual_runtime_seconds"] = float(actual_runtime_seconds)
+        estimated_evaluations = float(row.get("estimated_evaluations", np.nan))
+        row["actual_seconds_per_estimated_evaluation"] = (
+            float(actual_runtime_seconds / estimated_evaluations)
+            if pd.notna(estimated_evaluations) and estimated_evaluations > 0
+            else np.nan
+        )
         if stitched.empty:
             row["status"] = "no_result"
             row["error"] = "variant produced no stitched equity"
@@ -175,6 +196,8 @@ def _run_tournament_variant(
         row["error"] = ""
         return row
     except Exception as exc:
+        actual_runtime_seconds = time.perf_counter() - started
+        row["actual_runtime_seconds"] = float(actual_runtime_seconds)
         row["error"] = str(exc)
         return row
 
@@ -271,6 +294,31 @@ def summarize_tournament(variant_results: pd.DataFrame) -> pd.DataFrame:
 
         max_dd_series = pd.to_numeric(ok.get("strategy_max_dd", pd.Series(dtype=float)), errors="coerce")
         worst_max_dd = float(max_dd_series.min()) if not max_dd_series.dropna().empty else np.nan
+        estimated_combinations = pd.to_numeric(
+            group.get("estimated_parameter_combinations", pd.Series(dtype=float)),
+            errors="coerce",
+        ).sum()
+        estimated_windows = pd.to_numeric(
+            group.get("estimated_walk_forward_windows", pd.Series(dtype=float)),
+            errors="coerce",
+        ).sum()
+        estimated_evaluations = pd.to_numeric(
+            group.get("estimated_evaluations", pd.Series(dtype=float)),
+            errors="coerce",
+        ).sum()
+        estimated_runtime = pd.to_numeric(
+            group.get("estimated_runtime_seconds", pd.Series(dtype=float)),
+            errors="coerce",
+        ).sum()
+        actual_runtime = pd.to_numeric(
+            group.get("actual_runtime_seconds", pd.Series(dtype=float)),
+            errors="coerce",
+        ).sum()
+        actual_seconds_per_eval = (
+            float(actual_runtime / estimated_evaluations)
+            if pd.notna(estimated_evaluations) and estimated_evaluations > 0
+            else np.nan
+        )
 
         baseline_variant = "standard_5y_1y__10bps"
         baseline = _first_ok_variant(group, baseline_variant)
@@ -338,6 +386,12 @@ def summarize_tournament(variant_results: pd.DataFrame) -> pd.DataFrame:
                 "accepted_candidate": rejection_reason == "",
                 "rejection_reason": rejection_reason,
                 "output_dir": "",
+                "estimated_parameter_combinations": float(estimated_combinations),
+                "estimated_walk_forward_windows": float(estimated_windows),
+                "estimated_evaluations": float(estimated_evaluations),
+                "estimated_runtime_seconds": float(estimated_runtime),
+                "actual_runtime_seconds": float(actual_runtime),
+                "actual_seconds_per_estimated_evaluation": actual_seconds_per_eval,
             }
         )
     return pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
@@ -401,7 +455,88 @@ def _print_conclusion(summary: pd.DataFrame) -> None:
             print(f"- {row['family']}: {row['rejection_reason']}")
 
 
-def run_tournament_config(tournament_path: Path) -> pd.DataFrame:
+def _tournament_dry_run_rows(
+    *,
+    tournament_path: Path,
+    tournament_config: Dict[str, Any],
+    entries: List[Dict[str, Any]],
+    output_dir: Path,
+    tournament_benchmark_symbol: str,
+    variants: List[Dict[str, Any]],
+    costs: List[float],
+) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for entry in entries:
+        family = str(entry.get("family", entry.get("name", entry.get("config", "strategy"))))
+        category = str(entry.get("category", "general"))
+        try:
+            base_config, config_path_label = _load_entry_config(tournament_path, entry)
+            base_config.setdefault("experiment_name", family.lower().replace(" ", "_"))
+            base_config.setdefault("output_dir", str(output_dir / "experiments" / base_config["experiment_name"]))
+            total_estimated_combinations = 0
+            total_estimated_windows = 0
+            total_estimated_evaluations = 0
+            total_estimated_runtime = 0.0
+            for wf_variant in variants:
+                for cost in costs:
+                    variant_config = copy.deepcopy(base_config)
+                    variant_config["train_years"] = int(wf_variant["train_years"])
+                    variant_config["test_years"] = int(wf_variant["test_years"])
+                    variant_config["walk_forward_mode"] = str(wf_variant.get("walk_forward_mode", "rolling"))
+                    variant_config["transaction_cost_bps"] = float(cost)
+                    variant_config["anti_overfit_validation"] = {"enabled": False}
+                    estimate = estimate_experiment_workload(
+                        variant_config,
+                        include_full_experiment_overhead=False,
+                    )
+                    total_estimated_combinations += int(estimate.get("estimated_parameter_combinations", 0))
+                    total_estimated_windows += int(estimate.get("estimated_walk_forward_windows", 0))
+                    total_estimated_evaluations += int(estimate.get("estimated_evaluations", 0))
+                    total_estimated_runtime += float(estimate.get("estimated_runtime_seconds", 0.0))
+            rows.append(
+                {
+                    "status": "dry_run",
+                    "family": family,
+                    "category": category,
+                    "experiment_name": str(base_config.get("experiment_name", "")),
+                    "config_path": config_path_label,
+                    "strategy_name": str(base_config.get("strategy_name", "")),
+                    "symbols": ";".join(str(symbol).upper() for symbol in base_config.get("symbols", [])),
+                    "selection_benchmark_symbol": str(base_config.get("benchmark_symbol", "")).upper(),
+                    "tournament_benchmark_symbol": tournament_benchmark_symbol,
+                    "output_dir": str(base_config.get("output_dir", "")),
+                    "variant_count": len(variants) * len(costs),
+                    "estimated_parameter_combinations": total_estimated_combinations,
+                    "estimated_walk_forward_windows": total_estimated_windows,
+                    "estimated_evaluations": total_estimated_evaluations,
+                    "estimated_runtime_seconds": total_estimated_runtime,
+                    "error": "",
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "status": "dry_run_error",
+                    "family": family,
+                    "category": category,
+                    "config_path": str(entry.get("config", "")),
+                    "tournament_benchmark_symbol": tournament_benchmark_symbol,
+                    "variant_count": len(variants) * len(costs),
+                    "error": str(exc),
+                }
+            )
+    summary = pd.DataFrame(rows)
+    summary["tournament_total_configs"] = len(_strategy_entries(tournament_config))
+    summary["tournament_selected_configs"] = len(entries)
+    return summary
+
+
+def run_tournament_config(
+    tournament_path: Path,
+    *,
+    max_configs: Optional[int] = None,
+    dry_run: bool = False,
+) -> pd.DataFrame:
     tournament_path = Path(tournament_path)
     tournament_config = load_yaml_file(tournament_path)
     tournament_name = str(tournament_config.get("tournament_name", tournament_path.stem))
@@ -411,9 +546,29 @@ def run_tournament_config(tournament_path: Path) -> pd.DataFrame:
     tournament_benchmark_symbol = str(tournament_config.get("benchmark_symbol", "TQQQ")).upper()
     variants = _walk_forward_variants(tournament_config)
     costs = _cost_scenarios(tournament_config)
+    entries = _strategy_entries(tournament_config)
+    total_configs = len(entries)
+    if max_configs is not None:
+        entries = entries[: max(0, int(max_configs))]
+
+    if dry_run:
+        summary = _tournament_dry_run_rows(
+            tournament_path=tournament_path,
+            tournament_config=tournament_config,
+            entries=entries,
+            output_dir=output_dir,
+            tournament_benchmark_symbol=tournament_benchmark_symbol,
+            variants=variants,
+            costs=costs,
+        )
+        summary.to_csv(output_dir / "tournament_dry_run_summary.csv", index=False)
+        print(summary.to_string(index=False))
+        print(f"\nDry-run summary written to: {output_dir / 'tournament_dry_run_summary.csv'}")
+        return summary
 
     rows: List[Dict[str, Any]] = []
-    for entry in _strategy_entries(tournament_config):
+    tournament_started = time.perf_counter()
+    for entry in entries:
         family = str(entry.get("family", entry.get("name", entry.get("config", "strategy"))))
         category = str(entry.get("category", "general"))
         config_path_label = ""
@@ -466,6 +621,9 @@ def run_tournament_config(tournament_path: Path) -> pd.DataFrame:
     variant_results = pd.DataFrame(rows)
     summary = summarize_tournament(variant_results)
     summary["output_dir"] = str(output_dir)
+    summary["tournament_total_configs"] = total_configs
+    summary["tournament_selected_configs"] = len(entries)
+    summary["tournament_actual_runtime_seconds"] = time.perf_counter() - tournament_started
     failures = _failure_report(variant_results, summary)
 
     variant_results.to_csv(output_dir / "tournament_variant_results.csv", index=False)

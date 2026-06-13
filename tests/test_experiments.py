@@ -125,6 +125,22 @@ def test_run_config_minimal_synthetic_dataset(tmp_path: Path) -> None:
     }
 
 
+def test_run_config_dry_run_prints_estimate_without_backtest_outputs(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_path = tmp_path / "dry_run.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_experiment_config(tmp_path, "dry_run", "dry_run_output")),
+        encoding="utf-8",
+    )
+
+    assert main(["run-config", str(config_path), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    assert "estimated_parameter_combinations" in captured.out
+    assert "estimated_runtime_seconds" in captured.out
+    assert not (tmp_path / "dry_run_output" / "stitched_equity.csv").exists()
+
+
 def test_run_config_objective_cli_override(tmp_path: Path) -> None:
     _write_prices(tmp_path / "prices.csv")
     config = _experiment_config(tmp_path, "objective_override", "objective_override")
@@ -213,6 +229,41 @@ def test_run_batch_writes_rankings(tmp_path: Path) -> None:
         ranked["final_equity_ratio"],
         reverse=True,
     )
+
+
+def test_run_batch_dry_run_respects_max_configs_without_strategy_outputs(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_paths = []
+    for name in ["first", "second", "third"]:
+        config_path = tmp_path / f"{name}.yaml"
+        config_path.write_text(
+            yaml.safe_dump(_experiment_config(tmp_path, name, name)),
+            encoding="utf-8",
+        )
+        config_paths.append(str(config_path))
+
+    batch_path = tmp_path / "batch_dry.yaml"
+    batch_path.write_text(
+        yaml.safe_dump(
+            {
+                "batch_name": "dry_batch",
+                "configs": config_paths,
+                "output_dir": str(tmp_path / "batch_dry"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-batch", str(batch_path), "--dry-run", "--max-configs", "2"]) == 0
+
+    captured = capsys.readouterr()
+    assert "dry_run" in captured.out
+    dry_summary = pd.read_csv(tmp_path / "batch_dry" / "batch_dry_run_summary.csv")
+    assert len(dry_summary) == 2
+    assert set(dry_summary["experiment_name"]) == {"first", "second"}
+    assert dry_summary["batch_total_configs"].iloc[0] == 3
+    assert dry_summary["batch_selected_configs"].iloc[0] == 2
+    assert not (tmp_path / "first" / "stitched_equity.csv").exists()
 
 
 def test_run_config_core_overlay_minimal_dataset(tmp_path: Path) -> None:

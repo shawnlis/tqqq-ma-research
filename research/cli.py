@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .data import load_prices
-from .experiments import run_batch_config, run_experiment_config
+from .experiments import dry_run_experiment_config, run_batch_config, run_experiment_config
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
     compare_to_benchmark,
@@ -470,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_config.add_argument("config_path", help="Path to a YAML experiment config.")
     run_config.add_argument("--objective", help="Override the config objective name.")
+    run_config.add_argument("--dry-run", action="store_true", help="Print workload estimate without running backtests.")
 
     run_batch = subparsers.add_parser(
         "run-batch",
@@ -477,18 +478,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_batch.add_argument("batch_path", help="Path to a YAML batch config.")
     run_batch.add_argument("--objective", help="Override each experiment objective name.")
+    run_batch.add_argument("--max-configs", type=int, help="Run only the first N configs in the batch.")
+    run_batch.add_argument("--dry-run", action="store_true", help="Print workload estimates without running backtests.")
 
     run_tournament = subparsers.add_parser(
         "run-tournament",
         help="Run a tournament YAML config across candidate strategy families.",
     )
     run_tournament.add_argument("tournament_path", help="Path to a YAML tournament config.")
+    run_tournament.add_argument("--max-configs", type=int, help="Run only the first N tournament configs.")
+    run_tournament.add_argument("--dry-run", action="store_true", help="Print workload estimates without running backtests.")
 
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
     )
     run_open_questions.add_argument("pack_path", help="Path to an OpenQuestionsExperimentPack YAML config.")
+    run_open_questions.add_argument("--max-configs", type=int, help="Run only the first N experiment cases in the pack.")
+    run_open_questions.add_argument("--dry-run", action="store_true", help="Print workload estimates without running backtests.")
 
     extract_candidates = subparsers.add_parser(
         "extract-candidates",
@@ -550,16 +557,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         run_search(output_dir=args.output_dir, objective=objective)
         return 0
     if command == "run-config":
-        run_experiment_config(Path(args.config_path), objective_override=objective)
+        if args.dry_run:
+            dry_run_experiment_config(Path(args.config_path), objective_override=objective)
+        else:
+            run_experiment_config(Path(args.config_path), objective_override=objective)
         return 0
     if command == "run-batch":
-        run_batch_config(Path(args.batch_path), objective_override=objective)
+        run_batch_config(
+            Path(args.batch_path),
+            objective_override=objective,
+            max_configs=args.max_configs,
+            dry_run=args.dry_run,
+        )
         return 0
     if command == "run-tournament":
-        run_tournament_config(Path(args.tournament_path))
+        run_tournament_config(
+            Path(args.tournament_path),
+            max_configs=args.max_configs,
+            dry_run=args.dry_run,
+        )
         return 0
     if command == "run-open-questions":
-        run_open_questions_config(Path(args.pack_path))
+        run_open_questions_config(
+            Path(args.pack_path),
+            max_configs=args.max_configs,
+            dry_run=args.dry_run,
+        )
         return 0
     if command == "extract-candidates":
         extract_final_candidates(Path(args.tournament_dir))

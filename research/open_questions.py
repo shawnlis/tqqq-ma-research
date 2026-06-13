@@ -180,6 +180,29 @@ def _profile_rollup(frame: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+def _parse_question_selector(value: Any) -> int:
+    text = str(value).strip().lower().replace("-", "_")
+    if text.startswith("question_"):
+        text = text.split("question_", 1)[1]
+    elif text.startswith("q") and text[1:].isdigit():
+        text = text[1:]
+    question_id = int(text)
+    if question_id not in QUESTION_OUTPUTS:
+        raise ValueError(f"Unknown open question selector: {value}")
+    return question_id
+
+
+def _parse_question_selectors(values: Optional[Sequence[Any]]) -> Optional[List[int]]:
+    if values is None:
+        return None
+    out: List[int] = []
+    for value in values:
+        question_id = _parse_question_selector(value)
+        if question_id not in out:
+            out.append(question_id)
+    return out
+
+
 class OpenQuestionsExperimentPack:
     def __init__(
         self,
@@ -188,6 +211,7 @@ class OpenQuestionsExperimentPack:
         *,
         max_configs: Optional[int] = None,
         dry_run: bool = False,
+        only_questions: Optional[Sequence[Any]] = None,
     ):
         self.pack = copy.deepcopy(pack)
         self.config_path = Path(config_path) if config_path is not None else None
@@ -198,14 +222,18 @@ class OpenQuestionsExperimentPack:
         self.summary_rows: List[Dict[str, Any]] = []
         self.max_configs = None if max_configs is None else max(0, int(max_configs))
         self.dry_run = bool(dry_run)
+        self.only_questions = _parse_question_selectors(only_questions)
         self.configs_started = 0
 
     def run(self) -> pd.DataFrame:
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        run_questions = {
-            int(value)
-            for value in _as_list(self.pack.get("run_questions"), range(1, 9))
-        }
+        if self.only_questions is None:
+            run_questions = {
+                int(value)
+                for value in _as_list(self.pack.get("run_questions"), range(1, 9))
+            }
+        else:
+            run_questions = set(self.only_questions)
 
         runners = {
             1: self._question_1_exposure_floor,
@@ -239,6 +267,7 @@ class OpenQuestionsExperimentPack:
                 "pack_name": self.pack_name,
                 "dry_run": self.dry_run,
                 "max_configs": self.max_configs,
+                "only_questions": self.only_questions,
                 **self.pack,
             },
         )
@@ -1078,6 +1107,7 @@ def run_open_questions_config(
     *,
     max_configs: Optional[int] = None,
     dry_run: bool = False,
+    only_questions: Optional[Sequence[Any]] = None,
 ) -> pd.DataFrame:
     config_path = Path(config_path)
     pack = load_yaml_file(config_path)
@@ -1086,4 +1116,5 @@ def run_open_questions_config(
         config_path=config_path,
         max_configs=max_configs,
         dry_run=dry_run,
+        only_questions=only_questions,
     ).run()

@@ -519,6 +519,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_open_questions.add_argument("pack_path", help="Path to an OpenQuestionsExperimentPack YAML config.")
     run_open_questions.add_argument("--max-configs", type=int, help="Run only the first N experiment cases in the pack.")
     run_open_questions.add_argument("--dry-run", action="store_true", help="Print workload estimates without running backtests.")
+    run_open_questions.add_argument(
+        "--only",
+        action="append",
+        help="Run only one open question by id/name, e.g. 7, q7, or question_7. Repeat for multiple questions.",
+    )
 
     extract_candidates = subparsers.add_parser(
         "extract-candidates",
@@ -757,6 +762,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Path(args.pack_path),
             max_configs=args.max_configs,
             dry_run=args.dry_run,
+            only_questions=args.only,
         )
         return 0
     if command == "extract-candidates":

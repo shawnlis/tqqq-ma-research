@@ -168,6 +168,45 @@ def test_run_open_questions_dry_run_writes_estimates_without_case_outputs(tmp_pa
     assert not (output_dir / "case_outputs").exists()
 
 
+def test_run_open_questions_only_question_filter(tmp_path: Path) -> None:
+    config_path = tmp_path / "open_questions_only.yaml"
+    output_dir = tmp_path / "open_questions_only_out"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "pack_name": "only_open_questions",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(output_dir),
+                "start_date": "2011-01-01",
+                "end_date": "2019-12-31",
+                "run_questions": [1],
+                "synthetic_periods": [
+                    {
+                        "label": "synthetic_2000_2002",
+                        "start_date": "1999-03-10",
+                        "end_date": "2002-12-31",
+                        "use_synthetic": True,
+                        "train_years": 1,
+                        "test_years": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-open-questions", str(config_path), "--only", "question_7", "--dry-run"]) == 0
+
+    summary = pd.read_csv(output_dir / "open_questions_summary.csv")
+    q7 = summary.loc[summary["question_id"] == 7].iloc[0]
+    assert q7["dry_run_experiment_count"] == 1
+    assert q7["experiment_count"] == 1
+    skipped = summary.loc[summary["question_id"] != 7]
+    assert set(skipped["answer"]) == {"inconclusive"}
+    assert set(pd.read_csv(output_dir / "question_1_exposure_floor.csv")["status"]) == {"skipped"}
+    assert set(pd.read_csv(output_dir / "question_7_synthetic_history.csv")["status"]) == {"dry_run"}
+
+
 def test_run_open_questions_max_configs_skips_after_limit(tmp_path: Path) -> None:
     data_csv = tmp_path / "prices.csv"
     _write_open_question_prices(data_csv)

@@ -35,6 +35,7 @@ from .candidates import extract_final_candidates
 from .comparison import compare_run_files
 from .controlled_runs import summarize_controlled_runs
 from .open_questions import run_open_questions_config
+from .replay import replay_regime_windows
 from .tournament import run_tournament_config
 
 logging.basicConfig(
@@ -552,6 +553,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for controlled_run_summary.csv and controlled_run_report.md.",
     )
 
+    replay_regime = subparsers.add_parser(
+        "replay-regime-windows",
+        help="Replay selected legacy regime walk-forward windows without running grid search.",
+    )
+    replay_regime.add_argument("--windows", required=True, help="Path to legacy regime_walk_forward_windows.csv.")
+    replay_regime.add_argument("--old-stitched", required=True, help="Path to legacy stitched equity CSV.")
+    replay_regime.add_argument("--output-dir", required=True, help="Directory for replay diagnostic outputs.")
+    replay_regime.add_argument("--start-date", help="Data start date. Defaults to the earliest train_start in windows.")
+    replay_regime.add_argument("--end-date", help="Inclusive data/replay end date.")
+    replay_regime.add_argument("--tolerance", type=float, default=1e-8, help="Numeric comparison tolerance.")
+    replay_regime.add_argument("--transaction-cost-bps", type=float, help="Override transaction cost bps.")
+    replay_regime.add_argument("--execution-model", help="Override execution model.")
+    replay_regime.add_argument("--data-csv", help="Optional fixture CSV with Date, TQQQ, and QQQ columns.")
+
     return parser
 
 
@@ -629,6 +644,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command == "summarize-controlled-runs":
         summarize_controlled_runs(output_dir=Path(args.output_dir))
         return 0
+    if command == "replay-regime-windows":
+        summary = replay_regime_windows(
+            windows_path=Path(args.windows),
+            old_stitched_path=Path(args.old_stitched),
+            output_dir=Path(args.output_dir),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            tolerance=float(args.tolerance),
+            transaction_cost_bps=args.transaction_cost_bps,
+            execution_model=args.execution_model,
+            data_csv=Path(args.data_csv) if args.data_csv else None,
+        )
+        passed = bool(summary["passed"].iloc[0]) if not summary.empty else False
+        return 0 if passed else 1
 
     parser.error(f"Unsupported command: {command}")
     return 2

@@ -70,6 +70,7 @@ def test_compare_run_changed_return_fails(tmp_path: Path) -> None:
     ret_row = summary[summary["check"] == "ret"].iloc[0]
     assert not bool(ret_row["passed"])
     assert ret_row["max_abs_diff"] > 1e-8
+    assert ret_row["failure_type"] == "numeric_mismatch"
 
 
 def test_compare_run_missing_dates_fail(tmp_path: Path) -> None:
@@ -98,3 +99,5 @@ def test_compare_run_missing_dates_fail(tmp_path: Path) -> None:
     row_count = summary[summary["check"] == "row_count"].iloc[0]
     assert not bool(date_row["passed"])
     assert not bool(row_count["passed"])
+    assert date_row["failure_type"] == "date_range_mismatch"
+    assert row_count["failure_type"] == "date_range_mismatch"

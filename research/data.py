@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 CASH_SYMBOL = "CASH"
 
 
+def _filter_date_range(df: pd.DataFrame, start: str, end: Optional[str]) -> pd.DataFrame:
+    out = df.sort_index()
+    start_ts = pd.Timestamp(start)
+    out = out.loc[out.index >= start_ts]
+    if end:
+        end_ts = pd.Timestamp(end)
+        out = out.loc[out.index <= end_ts]
+    return out
+
+
 def add_cash_series(
     df: pd.DataFrame,
     symbol: str = CASH_SYMBOL,
@@ -78,6 +88,7 @@ def load_prices(
 
     if non_cash_symbols and use_csv_if_exists and file_path.exists():
         df = pd.read_csv(file_path, parse_dates=["Date"]).set_index("Date")
+        df = _filter_date_range(df, start=start, end=end)
         missing = set(non_cash_symbols) - set(df.columns)
         if missing and not allow_missing_symbols:
             raise ValueError(f"Cached price file is missing symbols: {sorted(missing)}")

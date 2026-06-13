@@ -53,10 +53,12 @@ def _row(
     max_abs_diff: Any = "",
     tolerance: float,
     details: str = "",
+    failure_type: str = "",
 ) -> Dict[str, Any]:
     return {
         "check": check,
         "passed": bool(passed),
+        "failure_type": "" if passed else failure_type,
         "old_value": _nan_to_text(old_value),
         "new_value": _nan_to_text(new_value),
         "max_abs_diff": _nan_to_text(max_abs_diff),
@@ -99,6 +101,7 @@ def _compare_numeric_column(
                 False,
                 tolerance=tolerance,
                 details=f"{column} missing from both files",
+                failure_type="schema_mismatch",
             )
         )
         return
@@ -109,6 +112,7 @@ def _compare_numeric_column(
                 False,
                 tolerance=tolerance,
                 details=f"{column} present in only one file",
+                failure_type="schema_mismatch",
             )
         )
         return
@@ -122,6 +126,7 @@ def _compare_numeric_column(
             max_abs_diff=diff,
             tolerance=tolerance,
             details="" if passed else f"{column} differs beyond tolerance",
+            failure_type="numeric_mismatch",
         )
     )
 
@@ -163,6 +168,7 @@ def compare_run_files(
             new_value=f"{new.index.min().date()} to {new.index.max().date()}" if len(new.index) else "",
             tolerance=tolerance,
             details=_date_difference_details(old.index, new.index),
+            failure_type="date_range_mismatch",
         )
     )
     rows.append(
@@ -173,6 +179,7 @@ def compare_run_files(
             new_value=len(new),
             tolerance=tolerance,
             details="" if len(old) == len(new) else "row counts differ",
+            failure_type="date_range_mismatch",
         )
     )
     rows.append(
@@ -183,6 +190,7 @@ def compare_run_files(
             new_value=len(new.columns),
             tolerance=tolerance,
             details=";".join(common_columns),
+            failure_type="schema_mismatch",
         )
     )
 
@@ -209,6 +217,7 @@ def compare_run_files(
                 max_abs_diff=final_diff,
                 tolerance=tolerance,
                 details="" if final_diff <= float(tolerance) else "final equity differs beyond tolerance",
+                failure_type="numeric_mismatch",
             )
         )
     else:
@@ -218,6 +227,7 @@ def compare_run_files(
                 False,
                 tolerance=tolerance,
                 details="equity missing or no overlapping dates",
+                failure_type="schema_mismatch",
             )
         )
 
@@ -229,6 +239,7 @@ def compare_run_files(
             max_abs_diff=daily_ret_diff,
             tolerance=tolerance,
             details="" if pd.notna(daily_ret_diff) else "ret missing or no overlapping dates",
+            failure_type="numeric_mismatch" if pd.notna(daily_ret_diff) else "schema_mismatch",
         )
     )
     equity_diff = _max_abs_diff(old, new, "equity", common_index)
@@ -239,6 +250,7 @@ def compare_run_files(
             max_abs_diff=equity_diff,
             tolerance=tolerance,
             details="" if pd.notna(equity_diff) else "equity missing or no overlapping dates",
+            failure_type="numeric_mismatch" if pd.notna(equity_diff) else "schema_mismatch",
         )
     )
 
@@ -252,6 +264,7 @@ def compare_run_files(
             new_value=str(new_csv),
             tolerance=tolerance,
             details="all checks passed" if overall_pass else "one or more checks failed",
+            failure_type="overall_failure",
         ),
     )
 
@@ -303,6 +316,11 @@ def _write_report(
 ) -> Path:
     report_path = output_dir / "compare_run_report.md"
     failed = summary[~summary["passed"].astype(bool)].copy()
+    diagnosis = (
+        failed["failure_type"].replace("", np.nan).dropna().value_counts().rename_axis("failure_type").reset_index(name="failed_checks")
+        if "failure_type" in failed.columns and not failed.empty
+        else pd.DataFrame(columns=["failure_type", "failed_checks"])
+    )
     lines = [
         "# Baseline Run Comparison",
         "",
@@ -317,7 +335,9 @@ def _write_report(
         "## Failed Checks",
         _markdown_table(failed),
         "",
+        "## Diagnosis",
+        _markdown_table(diagnosis),
+        "",
     ]
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
-

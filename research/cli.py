@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -265,8 +266,13 @@ def run_search(output_dir: str = "./ma_search_output_v7", objective: Optional[st
     logger.info("Saved outputs to %s", out_dir.resolve())
 
 
-def run_regime_search(output_dir: str = "./ma_search_output_v11", objective: Optional[str] = None) -> None:
-    data = load_prices(start="2011-01-01", use_csv_if_exists=True)
+def run_regime_search(
+    output_dir: str = "./ma_search_output_v11",
+    objective: Optional[str] = None,
+    start_date: str = "2011-01-01",
+    end_date: Optional[str] = None,
+) -> None:
+    data = load_prices(start=start_date, end=end_date, use_csv_if_exists=True)
 
     trend_windows = (150, 200, 250)
     momentum_windows = (20, 40)
@@ -411,7 +417,8 @@ def run_regime_search(output_dir: str = "./ma_search_output_v11", objective: Opt
         out_dir,
         {
             "command": "run-existing-regime",
-            "data_start": "2011-01-01",
+            "data_start": start_date,
+            "data_end": end_date,
             "transaction_cost_bps": transaction_cost_bps,
             "train_objective": train_objective,
             "n_jobs": n_jobs,
@@ -452,6 +459,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for regime CSV outputs and run_config.json.",
     )
     regime.add_argument("--objective", help="Override the training objective name.")
+    regime.add_argument("--start-date", default="2011-01-01", help="Start date for the regime data load.")
+    regime.add_argument("--end-date", help="Inclusive end date for the regime data load.")
 
     ma = subparsers.add_parser(
         "run-ma-search",
@@ -488,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_tournament.add_argument("tournament_path", help="Path to a YAML tournament config.")
     run_tournament.add_argument("--max-configs", type=int, help="Run only the first N tournament configs.")
     run_tournament.add_argument("--dry-run", action="store_true", help="Print workload estimates without running backtests.")
+    run_tournament.add_argument(
+        "--allow-long-run",
+        action="store_true",
+        help="Allow a full tournament whose estimated runtime exceeds the configured safety threshold.",
+    )
 
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
@@ -551,6 +565,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         run_regime_search(
             output_dir=args.output_dir if args.command else "./ma_search_output_v11",
             objective=objective,
+            start_date=getattr(args, "start_date", "2011-01-01"),
+            end_date=getattr(args, "end_date", None),
         )
         return 0
     if command == "run-ma-search":
@@ -571,12 +587,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
     if command == "run-tournament":
-        run_tournament_config(
-            Path(args.tournament_path),
-            max_configs=args.max_configs,
-            dry_run=args.dry_run,
-        )
-        return 0
+        try:
+            run_tournament_config(
+                Path(args.tournament_path),
+                max_configs=args.max_configs,
+                dry_run=args.dry_run,
+                allow_long_run=args.allow_long_run,
+            )
+            return 0
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     if command == "run-open-questions":
         run_open_questions_config(
             Path(args.pack_path),
@@ -585,8 +606,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
     if command == "extract-candidates":
-        extract_final_candidates(Path(args.tournament_dir))
-        return 0
+        try:
+            extract_final_candidates(Path(args.tournament_dir))
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     if command == "audit-config":
         audit_config(Path(args.config_path))
         return 0

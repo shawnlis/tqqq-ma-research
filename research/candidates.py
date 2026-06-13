@@ -393,12 +393,20 @@ def _strategy_groups(variant_results: pd.DataFrame) -> Iterable[Tuple[Tuple[Any,
 
 def extract_final_candidates(tournament_dir: Path) -> pd.DataFrame:
     tournament_dir = Path(tournament_dir)
+    summary_path = tournament_dir / "tournament_summary.csv"
     variant_results_path = tournament_dir / "tournament_variant_results.csv"
+    if not summary_path.exists():
+        raise FileNotFoundError(
+            f"Missing completed tournament summary: {summary_path}. "
+            "Run a successful full tournament before extracting candidates."
+        )
     if not variant_results_path.exists():
         raise FileNotFoundError(f"Missing tournament variant results: {variant_results_path}")
 
     variant_results = pd.read_csv(variant_results_path)
-    summary = _read_csv(tournament_dir / "tournament_summary.csv")
+    summary = _read_csv(summary_path)
+    if summary.empty:
+        raise ValueError(f"Tournament summary is empty: {summary_path}")
     summary_index: Dict[Tuple[str, str, str, str], pd.Series] = {}
     if not summary.empty:
         for _, row in summary.iterrows():

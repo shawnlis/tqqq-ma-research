@@ -862,6 +862,25 @@ def _load_price_data(config: Dict[str, Any]) -> pd.DataFrame:
         if not use_synthetic and (market_symbols or rotation_symbols):
             data = data.dropna(subset=[symbol for symbol in required_symbols if symbol in data.columns])
 
+    if use_synthetic and not data_csv:
+        base_history = load_prices(
+            start=str(config["start_date"]),
+            end=str(end_value) if end_value else None,
+            symbols=[synthetic_base_symbol],
+            use_csv_if_exists=bool(config.get("use_csv_if_exists", True)),
+            cache_dir=str(config.get("cache_dir", "./price_cache")),
+            dropna=True,
+            allow_missing_symbols=False,
+            include_ohlc=include_ohlc,
+        )
+        union_index = data.index.union(base_history.index)
+        data = data.reindex(union_index).sort_index()
+        for column in base_history.columns:
+            if column in data.columns:
+                data[column] = data[column].combine_first(base_history[column])
+            else:
+                data[column] = base_history[column].reindex(data.index)
+
     data = data.loc[data.index >= start_date].copy()
     if end_date is not None:
         data = data.loc[data.index <= end_date].copy()

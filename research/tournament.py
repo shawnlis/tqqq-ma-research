@@ -19,6 +19,7 @@ DEFAULT_WALK_FORWARD_VARIANTS = (
     {"name": "alternate_7y_1y", "train_years": 7, "test_years": 1},
 )
 DEFAULT_COST_SCENARIOS = (10.0, 25.0, 50.0)
+DEFAULT_MAX_ESTIMATED_RUNTIME_SECONDS = 3600.0
 SUMMARY_COLUMNS = [
     "family",
     "category",
@@ -536,6 +537,7 @@ def run_tournament_config(
     *,
     max_configs: Optional[int] = None,
     dry_run: bool = False,
+    allow_long_run: bool = False,
 ) -> pd.DataFrame:
     tournament_path = Path(tournament_path)
     tournament_config = load_yaml_file(tournament_path)
@@ -565,6 +567,32 @@ def run_tournament_config(
         print(summary.to_string(index=False))
         print(f"\nDry-run summary written to: {output_dir / 'tournament_dry_run_summary.csv'}")
         return summary
+
+    guard_summary = _tournament_dry_run_rows(
+        tournament_path=tournament_path,
+        tournament_config=tournament_config,
+        entries=entries,
+        output_dir=output_dir,
+        tournament_benchmark_symbol=tournament_benchmark_symbol,
+        variants=variants,
+        costs=costs,
+    )
+    max_estimated_runtime = float(
+        tournament_config.get("max_estimated_runtime_seconds", DEFAULT_MAX_ESTIMATED_RUNTIME_SECONDS)
+    )
+    estimated_runtime = float(
+        pd.to_numeric(guard_summary.get("estimated_runtime_seconds", pd.Series(dtype=float)), errors="coerce").sum()
+    )
+    guard_summary["max_estimated_runtime_seconds"] = max_estimated_runtime
+    guard_summary["allow_long_run"] = bool(allow_long_run)
+    guard_summary.to_csv(output_dir / "tournament_runtime_guard_summary.csv", index=False)
+    if estimated_runtime > max_estimated_runtime and not allow_long_run:
+        raise RuntimeError(
+            "Tournament estimated runtime exceeds safety threshold: "
+            f"{estimated_runtime:.3f}s > {max_estimated_runtime:.3f}s. "
+            "Run with --dry-run, use a smaller config such as configs/tournament_gate.yaml, "
+            "or pass --allow-long-run intentionally."
+        )
 
     rows: List[Dict[str, Any]] = []
     tournament_started = time.perf_counter()

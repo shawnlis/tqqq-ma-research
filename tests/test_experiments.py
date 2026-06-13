@@ -6,6 +6,7 @@ import pandas as pd
 import yaml
 
 from research.cli import main
+from research.experiments import _load_price_data
 
 
 def _write_prices(path: Path) -> None:
@@ -187,6 +188,49 @@ def test_run_config_synthetic_leverage_writes_tracking_outputs(tmp_path: Path) -
     assert "tracking_error" in tracking.columns
     assert "cagr_difference" in tracking.columns
     assert "max_drawdown_difference" in tracking.columns
+
+
+def test_synthetic_leverage_uses_standalone_base_history_when_combined_cache_is_truncated(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    early_dates = pd.bdate_range("2000-01-03", "2000-03-31")
+    late_dates = pd.bdate_range("2011-01-03", "2011-03-31")
+    pd.DataFrame(
+        {
+            "Date": early_dates,
+            "QQQ": 100.0 + np.arange(len(early_dates), dtype=float),
+        }
+    ).to_csv(cache_dir / "qqq_prices.csv", index=False)
+    pd.DataFrame(
+        {
+            "Date": late_dates,
+            "QQQ": 200.0 + np.arange(len(late_dates), dtype=float),
+            "TQQQ": 50.0 + np.arange(len(late_dates), dtype=float),
+        }
+    ).to_csv(cache_dir / "qqq_tqqq_prices.csv", index=False)
+
+    data = _load_price_data(
+        {
+            "symbols": ["QQQ", "TQQQ"],
+            "start_date": "2000-01-03",
+            "end_date": "2000-03-31",
+            "benchmark_symbol": "TQQQ",
+            "strategy_name": "ma",
+            "cache_dir": str(cache_dir),
+            "download_ohlc": False,
+            "use_synthetic_leverage": True,
+            "synthetic_base_symbol": "QQQ",
+            "synthetic_leverage": 3.0,
+            "synthetic_expense_ratio": 0.0,
+            "synthetic_financing_spread": 0.0,
+        }
+    )
+
+    assert not data.empty
+    assert data.index.min() == early_dates.min()
+    assert data.index.max() == early_dates.max()
+    assert "TQQQ" in data.columns
+    assert data["TQQQ"].notna().all()
 
 
 def test_run_batch_writes_rankings(tmp_path: Path) -> None:

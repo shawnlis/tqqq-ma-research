@@ -70,6 +70,24 @@ def test_extract_candidates_applies_hard_gates(tmp_path: Path) -> None:
     rows.extend(_variant_rows("Overfit Stability", standard_10=1.16, standard_50=0.95, alt3=1.03, alt7=0.99))
     rows.extend(_variant_rows("Missing Artifacts", standard_10=1.18, standard_50=0.96, alt3=1.02, alt7=0.99))
     pd.DataFrame(rows).to_csv(out / "tournament_variant_results.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "family": family,
+                "category": "tqqq",
+                "experiment_name": family.lower().replace(" ", "_"),
+                "config_path": "",
+                "strategy_name": "ma",
+            }
+            for family in [
+                "Candidate",
+                "Raw Fail",
+                "Cost Sensitive",
+                "Overfit Stability",
+                "Missing Artifacts",
+            ]
+        ]
+    ).to_csv(out / "tournament_summary.csv", index=False)
 
     stability = pd.DataFrame(
         [
@@ -106,3 +124,16 @@ def test_extract_candidates_applies_hard_gates(tmp_path: Path) -> None:
     assert reasons["Cost Sensitive"] == "too cost-sensitive"
     assert reasons["Overfit Stability"] == "overfit"
     assert reasons["Missing Artifacts"] == "data unavailable"
+
+
+def test_extract_candidates_requires_completed_tournament_summary(tmp_path: Path, capsys) -> None:
+    out = tmp_path / "tournament"
+    out.mkdir()
+    pd.DataFrame(_variant_rows("Candidate", standard_10=1.20, standard_50=0.96, alt3=1.02, alt7=0.98)).to_csv(
+        out / "tournament_variant_results.csv",
+        index=False,
+    )
+
+    assert main(["extract-candidates", str(out)]) == 1
+    captured = capsys.readouterr()
+    assert "Missing completed tournament summary" in captured.err

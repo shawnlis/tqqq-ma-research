@@ -146,3 +146,33 @@ def test_run_tournament_dry_run_respects_max_configs(tmp_path: Path, capsys) -> 
     assert summary["tournament_total_configs"].iloc[0] == 3
     assert summary["tournament_selected_configs"].iloc[0] == 2
     assert not (tmp_path / "first" / "stitched_equity.csv").exists()
+
+
+def test_run_tournament_runtime_guard_requires_explicit_allow_long_run(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_path = tmp_path / "single.yaml"
+    config_path.write_text(yaml.safe_dump(_ma_config(tmp_path, "single")), encoding="utf-8")
+
+    tournament_path = tmp_path / "guarded_tournament.yaml"
+    tournament_path.write_text(
+        yaml.safe_dump(
+            {
+                "tournament_name": "guarded_tournament",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(tmp_path / "guarded_out"),
+                "max_estimated_runtime_seconds": 0.0,
+                "strategies": [
+                    {"family": "Guarded MA", "category": "tqqq", "config": str(config_path)},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-tournament", str(tournament_path)]) == 1
+    captured = capsys.readouterr()
+    assert "--allow-long-run" in captured.err
+
+    assert (tmp_path / "guarded_out" / "tournament_runtime_guard_summary.csv").exists()
+    assert main(["run-tournament", str(tournament_path), "--allow-long-run"]) == 0
+    assert (tmp_path / "guarded_out" / "tournament_summary.csv").exists()

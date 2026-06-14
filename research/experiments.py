@@ -20,6 +20,7 @@ from .execution import (
     ohlc_columns,
     resolve_execution_model,
 )
+from .fairness import write_voltarget_fairness_outputs
 from .metrics import summarize_performance
 from .reports import (
     compare_real_to_synthetic,
@@ -2333,6 +2334,16 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
             benchmark_summary=benchmark_summary,
             stitched=stitched,
             wf_table=wf_table,
+        )
+        write_voltarget_fairness_outputs(
+            output_dir=output_dir,
+            stitched=stitched,
+            price_data=data,
+            transaction_cost_bps=float(config.get("transaction_cost_bps", 0.0)),
+            wf_table=wf_table,
+            config=config,
+            trade_asset=_asset_config(config).trade_asset,
+            execution_model=normalize_execution_model(config.get("execution_model", CLOSE_TO_CLOSE_SHIFTED)),
         )
     generate_experiment_report(output_dir=output_dir, config=run_config_payload, price_data=data)
     _assert_successful_output_contract(output_dir, config, config_path, estimate)

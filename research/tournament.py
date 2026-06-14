@@ -12,7 +12,15 @@ import pandas as pd
 
 from .baseline_gate import enforce_baseline_gate
 from .execution import CLOSE_TO_CLOSE_SHIFTED
-from .experiments import _load_price_data, _run_walk_forward, estimate_experiment_workload, load_yaml_file
+from .experiments import (
+    _asset_config,
+    _is_vol_target_strategy,
+    _load_price_data,
+    _run_walk_forward,
+    estimate_experiment_workload,
+    load_yaml_file,
+)
+from .fairness import write_voltarget_fairness_outputs
 from .reports import compare_to_benchmark, generate_tournament_report
 
 
@@ -216,6 +224,8 @@ def _write_variant_error_artifacts(
         "yearly_returns.csv",
         "run_config.json",
         "report.md",
+        "constant_leverage_benchmark_summary.csv",
+        "voltarget_fairness_report.md",
     ):
         (output_dir / stale_success).unlink(missing_ok=True)
     for stale_native in output_dir.glob("soxl_vs_*"):
@@ -342,6 +352,17 @@ def _run_tournament_variant(
             lower = selection_benchmark.replace("^", "").lower()
             native_summary.to_csv(variant_output_dir / f"soxl_vs_{lower}_summary.csv", index=False)
             native_yearly.to_csv(variant_output_dir / f"soxl_vs_{lower}_yearly_returns.csv", index=False)
+        if _is_vol_target_strategy(variant_config):
+            write_voltarget_fairness_outputs(
+                output_dir=variant_output_dir,
+                stitched=stitched,
+                price_data=data,
+                transaction_cost_bps=float(cost_bps),
+                wf_table=wf_table,
+                config=variant_config,
+                trade_asset=_asset_config(variant_config).trade_asset,
+                execution_model=str(execution_model),
+            )
         row["status"] = "ok"
         row["error"] = ""
         _write_variant_success_artifacts(

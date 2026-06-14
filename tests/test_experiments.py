@@ -560,6 +560,8 @@ def test_run_config_vol_target_minimal_dataset(tmp_path: Path) -> None:
     output_dir = tmp_path / "vol_target"
     assert (output_dir / "drawdown_chart_data.csv").exists()
     assert (output_dir / "vol_target_acceptance_summary.csv").exists()
+    assert (output_dir / "constant_leverage_benchmark_summary.csv").exists()
+    assert (output_dir / "voltarget_fairness_report.md").exists()
     stitched = pd.read_csv(output_dir / "stitched_equity.csv")
     assert "target_exposure" in stitched.columns
     assert "realized_ann_vol" in stitched.columns

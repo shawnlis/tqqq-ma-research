@@ -5,6 +5,7 @@ import pandas as pd
 import yaml
 
 from research.cli import main
+from research.tournament import _write_ranked_aliases, _write_voltarget_deep_report
 
 
 def _write_prices(path: Path) -> None:
@@ -207,3 +208,129 @@ def test_run_tournament_runtime_guard_requires_explicit_allow_long_run(tmp_path:
     assert (tmp_path / "guarded_out" / "tournament_runtime_guard_summary.csv").exists()
     assert main(["run-tournament", str(tournament_path), "--allow-long-run"]) == 0
     assert (tmp_path / "guarded_out" / "tournament_summary.csv").exists()
+
+
+def test_tournament_voltarget_deep_dry_run_succeeds(tmp_path: Path) -> None:
+    source = Path("configs") / "tournament_voltarget_deep.yaml"
+    config = yaml.safe_load(source.read_text(encoding="utf-8"))
+    config["output_dir"] = str(tmp_path / "voltarget_deep")
+    config_path = tmp_path / "tournament_voltarget_deep.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    assert main(["run-tournament", str(config_path), "--dry-run"]) == 0
+
+    dry_run = pd.read_csv(tmp_path / "voltarget_deep" / "tournament_dry_run_summary.csv")
+    assert set(dry_run["family"]) == {
+        "VolTargetTQQQStrategy",
+        "VolTarget + DrawdownGovernor",
+        "MarketInternals VolTarget",
+        "CoreOverlay + Rebound comparator",
+        "SOXL VolTarget sector bet",
+    }
+    assert set(dry_run["execution_models"]) == {"close_to_close_shifted;next_open_to_next_open"}
+    assert (dry_run["variant_count"] == 24).all()
+    assert dry_run["estimated_runtime_seconds"].astype(float).sum() > 0.0
+
+
+def test_voltarget_deep_rankings_exclude_soxl_sector_bets(tmp_path: Path) -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "family": "TQQQ VolTarget",
+                "category": "tqqq_voltarget",
+                "baseline_final_equity_ratio": 1.2,
+                "robustness_score": 0.8,
+            },
+            {
+                "family": "SOXL VolTarget sector bet",
+                "category": "soxl_sector_bet",
+                "baseline_final_equity_ratio": 3.0,
+                "robustness_score": 2.0,
+            },
+        ]
+    )
+
+    _write_ranked_aliases(
+        tmp_path,
+        summary,
+        {"separate_sector_bets": True, "sector_bet_categories": ["soxl_sector_bet"]},
+    )
+
+    tqqq_ranked = pd.read_csv(tmp_path / "ranked_by_final_equity_ratio.csv")
+    sector_ranked = pd.read_csv(tmp_path / "sector_bet_ranked_by_final_equity_ratio.csv")
+    assert set(tqqq_ranked["family"]) == {"TQQQ VolTarget"}
+    assert set(sector_ranked["family"]) == {"SOXL VolTarget sector bet"}
+
+
+def test_voltarget_deep_report_includes_sensitivity_and_alternate_variants(tmp_path: Path) -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "family": "VolTargetTQQQStrategy",
+                "category": "tqqq_voltarget",
+                "baseline_final_equity_ratio": 1.4,
+                "median_final_equity_ratio": 1.2,
+                "worst_final_equity_ratio": 0.9,
+                "baseline_strategy_max_dd": -0.55,
+                "cost_10_final_equity_ratio": 1.4,
+                "cost_25_final_equity_ratio": 1.2,
+                "cost_50_final_equity_ratio": 1.0,
+                "cost_sensitivity_25_vs_10": 0.86,
+                "cost_sensitivity_50_vs_10": 0.71,
+                "robustness_score": 1.0,
+                "accepted_candidate": True,
+                "rejection_reason": "",
+            },
+            {
+                "family": "SOXL VolTarget sector bet",
+                "category": "soxl_sector_bet",
+                "baseline_final_equity_ratio": 2.0,
+                "median_final_equity_ratio": 1.7,
+                "worst_final_equity_ratio": 0.8,
+                "baseline_strategy_max_dd": -0.75,
+                "cost_10_final_equity_ratio": 2.0,
+                "cost_25_final_equity_ratio": 1.7,
+                "cost_50_final_equity_ratio": 1.3,
+                "cost_sensitivity_25_vs_10": 0.85,
+                "cost_sensitivity_50_vs_10": 0.65,
+                "robustness_score": 1.4,
+                "native_benchmark_symbol": "SOXL",
+                "baseline_native_final_equity_ratio": 0.5,
+                "accepted_candidate": False,
+                "rejection_reason": "sector bet",
+            },
+        ]
+    )
+    variants = pd.DataFrame(
+        [
+            {
+                "family": "VolTargetTQQQStrategy",
+                "category": "tqqq_voltarget",
+                "variant": "alternate_3y_1y__25bps",
+                "walk_forward_variant": "alternate_3y_1y",
+                "walk_forward_mode": "rolling",
+                "execution_model": "close_to_close_shifted",
+                "transaction_cost_bps": 25.0,
+                "final_equity_ratio": 1.1,
+                "strategy_max_dd": -0.50,
+                "status": "ok",
+                "error": "",
+            }
+        ]
+    )
+
+    report_path = _write_voltarget_deep_report(
+        output_dir=tmp_path,
+        config={"report_type": "voltarget_deep", "tournament_name": "test"},
+        summary=summary,
+        variants=variants,
+        failures=pd.DataFrame(),
+    )
+
+    assert report_path is not None
+    report = report_path.read_text(encoding="utf-8")
+    assert "## Cost sensitivity" in report
+    assert "## Alternate walk-forward variants" in report
+    assert "## TQQQ VolTarget candidates" in report
+    assert "## SOXL sector-bet candidates" in report
+    assert "SOXL rows are sector-bet diagnostics" in report

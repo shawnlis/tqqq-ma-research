@@ -1,0 +1,155 @@
+tournament_name: voltarget_deep_validation
+benchmark_symbol: TQQQ
+output_dir: outputs/tournament_voltarget_deep
+max_estimated_runtime_seconds: 3600
+report_type: voltarget_deep
+voltarget_deep_report: true
+separate_sector_bets: true
+sector_bet_categories: [soxl_sector_bet]
+execution_models:
+  - close_to_close_shifted
+  - next_open_to_next_open
+walk_forward_variants:
+  - name: standard_5y_1y
+    train_years: 5
+    test_years: 1
+  - name: alternate_3y_1y
+    train_years: 3
+    test_years: 1
+  - name: alternate_7y_1y
+    train_years: 7
+    test_years: 1
+  - name: anchored_expanding_1y
+    train_years: 5
+    test_years: 1
+    walk_forward_mode: anchored_expanding
+cost_scenarios: [10.0, 25.0, 50.0]
+strategies:
+  - family: VolTargetTQQQStrategy
+    category: tqqq_voltarget
+    config: configs/vol_target_tqqq.yaml
+    overrides:
+      experiment_name: deep_vol_target_tqqq
+      output_dir: outputs/tournament_voltarget_deep/experiments/deep_vol_target_tqqq
+      execution_model: close_to_close_shifted
+      parameter_grid: &voltarget_deep_grid
+        target_ann_vol: [0.45, 0.60, 0.75]
+        realized_vol_window: [10, 20, 40]
+        min_exposure: [0.25, 0.50]
+        max_exposure: [1.00, 1.25, 1.50, 2.00]
+        trend_window: [100, 150, 200]
+        momentum_window: [20, 63, 126]
+        trend_multiplier_below_ma: [0.25, 0.50, 0.75]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.040, 0.050, 0.060]
+        crash_exposure: [0.00, 0.25, 0.50]
+        risk_off_symbol: [CASH]
+        risk_off_weight: [0.0]
+
+  - family: VolTarget + DrawdownGovernor
+    category: tqqq_voltarget_governor
+    config: configs/vol_target_governor.yaml
+    overrides:
+      experiment_name: deep_vol_target_governor
+      output_dir: outputs/tournament_voltarget_deep/experiments/deep_vol_target_governor
+      execution_model: close_to_close_shifted
+      parameter_grid:
+        target_ann_vol: [0.75]
+        realized_vol_window: [20]
+        min_exposure: [0.50]
+        max_exposure: [1.50, 2.00]
+        trend_window: [150]
+        momentum_window: [63]
+        trend_multiplier_below_ma: [0.50]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.050]
+        crash_exposure: [0.25]
+        risk_off_symbol: [CASH]
+        risk_off_weight: [0.0]
+        use_rebound_module: [false]
+        use_drawdown_governor: [true]
+        portfolio_dd_trigger: [-0.30, -0.40]
+        qqq_dd_trigger: [-0.15]
+        reduced_exposure: [0.50, 0.75]
+        recovery_ma_window: [20]
+        recovery_momentum_window: [10]
+        recovery_momentum_threshold: [0.03, 0.05]
+        max_days_reduced: [40, 63]
+
+  - family: MarketInternals VolTarget
+    category: tqqq_market_internals
+    config: configs/vol_target_market_internals.yaml
+    overrides:
+      experiment_name: deep_vol_target_market_internals
+      output_dir: outputs/tournament_voltarget_deep/experiments/deep_vol_target_market_internals
+      execution_model: close_to_close_shifted
+      parameter_grid:
+        target_ann_vol: [0.75]
+        realized_vol_window: [20]
+        min_exposure: [0.50]
+        max_exposure: [1.50, 2.00]
+        trend_window: [150]
+        momentum_window: [63]
+        trend_multiplier_below_ma: [0.50]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.050]
+        crash_exposure: [0.25]
+        risk_off_symbol: [CASH]
+        risk_off_weight: [0.0]
+        use_market_internals: [true]
+        signal_windows: [100]
+        risk_on_threshold: [0.60]
+        risk_off_threshold: [0.40]
+        market_internals_components:
+          - [qqq_trend, spy_trend, credit_risk, tech_strength]
+
+  - family: CoreOverlay + Rebound comparator
+    category: secondary_comparator
+    config: configs/core_overlay_with_rebound.yaml
+    overrides:
+      experiment_name: deep_core_overlay_with_rebound_comparator
+      output_dir: outputs/tournament_voltarget_deep/experiments/deep_core_overlay_with_rebound_comparator
+      execution_model: close_to_close_shifted
+      parameter_grid:
+        core_exposure: [0.65, 1.00]
+        overlay_max: [0.50]
+        max_total_exposure: [1.25]
+        trend_window: [150]
+        fast_trend_window: [50]
+        momentum_window: [63]
+        vol_window: [20]
+        vol_cap: [0.022]
+        crash_cut_exposure: [0.25]
+        rebound_boost: [false]
+        use_rebound_module: [true]
+        rolling_high_window: [126]
+        drawdown_trigger: [-0.20]
+        rebound_momentum_window: [10]
+        rebound_momentum_threshold: [0.05]
+        reclaim_ma_window: [20]
+        rebound_position: [1.25]
+        rebound_hold_days: [10]
+
+  - family: SOXL VolTarget sector bet
+    category: soxl_sector_bet
+    config: configs/soxl_vol_target.yaml
+    overrides:
+      experiment_name: deep_soxl_vol_target_sector_bet
+      output_dir: outputs/tournament_voltarget_deep/experiments/deep_soxl_vol_target_sector_bet
+      execution_model: close_to_close_shifted
+      soxl_experiment: true
+      benchmark_symbol: SOXL
+      benchmark_comparison_symbols: [TQQQ, SOXX, SMH]
+      parameter_grid:
+        target_ann_vol: [0.90, 1.20]
+        realized_vol_window: [20]
+        min_exposure: [0.25]
+        max_exposure: [1.00, 1.25, 1.50]
+        trend_window: [100, 200]
+        momentum_window: [20, 63]
+        trend_multiplier_below_ma: [0.25, 0.50]
+        momentum_boost: [1.00, 1.15]
+        crash_vol_cutoff: [0.080]
+        crash_exposure: [0.00, 0.25]
+        risk_off_symbol: [BIL]
+        risk_off_weight: [1.0]

@@ -40,6 +40,7 @@ from .open_questions import run_open_questions_config
 from .replay import replay_regime_windows
 from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
+from .voltarget_timing_audit import audit_voltarget_timing
 
 logging.basicConfig(
     level=logging.INFO,
@@ -623,6 +624,23 @@ def build_parser() -> argparse.ArgumentParser:
     audit_regime_allocation_parser.add_argument("--data-csv", help="Optional fixture CSV with Date, TQQQ, and QQQ columns.")
     audit_regime_allocation_parser.add_argument("--cache-dir", default="./price_cache", help="Price cache directory.")
 
+    audit_voltarget_timing_parser = subparsers.add_parser(
+        "audit-voltarget-timing",
+        help="Audit VolTarget generated daily output for look-ahead and one-bar signal timing.",
+    )
+    audit_voltarget_timing_parser.add_argument("config_path", help="Path to a VolTarget YAML config.")
+    audit_voltarget_timing_parser.add_argument(
+        "--output-dir",
+        default="outputs/audits",
+        help="Directory for voltarget_timing_audit_summary.csv and voltarget_timing_audit_report.md.",
+    )
+    audit_voltarget_timing_parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=1e-8,
+        help="Absolute numeric tolerance for timing comparisons.",
+    )
+
     baseline_regression = subparsers.add_parser(
         "baseline-regression-report",
         help="Create baseline regression summary/report and write BASELINE_GATE_FAILED.txt unless equivalence passes.",
@@ -852,6 +870,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cache_dir=args.cache_dir,
         )
         return 0
+    if command == "audit-voltarget-timing":
+        try:
+            _, passed = audit_voltarget_timing(
+                Path(args.config_path),
+                output_dir=Path(args.output_dir),
+                tolerance=float(args.tolerance),
+            )
+            return 0 if passed else 1
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     if command == "baseline-regression-report":
         create_baseline_regression_report(
             output_dir=Path(args.output_dir),

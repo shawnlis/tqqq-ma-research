@@ -370,14 +370,20 @@ def test_summarize_voltarget_stage_separates_roles(tmp_path: Path) -> None:
     assert main(["summarize-voltarget-stage", str(output_dir)]) == 0
 
     stage = pd.read_csv(output_dir / "voltarget_stage_summary.csv")
+    contribution = pd.read_csv(output_dir / "one_year_contribution.csv")
     assert set(stage["stage_role"]) == {"voltarget", "governor", "core_overlay_comparator"}
     voltarget = stage[stage["stage_role"] == "voltarget"].iloc[0]
     assert voltarget["selected_max_exposure_values"] == "1;1.5"
     assert voltarget["strategy_vs_same_max_constant_ratio"] == 0.97
+    assert {"yearly_strategy_return", "yearly_tqqq_return", "contribution_to_total_log_excess"}.issubset(
+        contribution.columns
+    )
+    assert bool(voltarget["performance_dominated_by_one_year"])
     report = (output_dir / "voltarget_stage_report.md").read_text(encoding="utf-8")
     assert "## 10/25/50 bps Comparison" in report
     assert "## 5/1, 3/1, 7/1 Walk-Forward Comparison" in report
     assert "## Same-Max-Exposure Constant Benchmark" in report
+    assert "## One-Year Contribution Audit" in report
 
 
 def test_tournament_voltarget_stage2_template_is_not_active_in_stage1(tmp_path: Path) -> None:
@@ -432,11 +438,20 @@ def test_voltarget_deep_rankings_exclude_soxl_sector_bets(tmp_path: Path) -> Non
 
 
 def test_voltarget_deep_report_includes_sensitivity_and_alternate_variants(tmp_path: Path) -> None:
+    baseline_output = tmp_path / "voltarget_baseline"
+    baseline_output.mkdir()
+    pd.DataFrame(
+        [
+            {"year": 2020, "strategy_return": 0.50, "benchmark_return": 0.00},
+            {"year": 2021, "strategy_return": 0.05, "benchmark_return": 0.00},
+        ]
+    ).to_csv(baseline_output / "yearly_returns.csv", index=False)
     summary = pd.DataFrame(
         [
             {
                 "family": "VolTargetTQQQStrategy",
                 "category": "tqqq_voltarget",
+                "baseline_variant": "standard_5y_1y__10bps",
                 "baseline_final_equity_ratio": 1.4,
                 "median_final_equity_ratio": 1.2,
                 "worst_final_equity_ratio": 0.9,
@@ -453,6 +468,7 @@ def test_voltarget_deep_report_includes_sensitivity_and_alternate_variants(tmp_p
             {
                 "family": "SOXL VolTarget sector bet",
                 "category": "soxl_sector_bet",
+                "baseline_variant": "standard_5y_1y__10bps",
                 "baseline_final_equity_ratio": 2.0,
                 "median_final_equity_ratio": 1.7,
                 "worst_final_equity_ratio": 0.8,
@@ -472,6 +488,20 @@ def test_voltarget_deep_report_includes_sensitivity_and_alternate_variants(tmp_p
     )
     variants = pd.DataFrame(
         [
+            {
+                "family": "VolTargetTQQQStrategy",
+                "category": "tqqq_voltarget",
+                "variant": "standard_5y_1y__10bps",
+                "walk_forward_variant": "standard_5y_1y",
+                "walk_forward_mode": "rolling",
+                "execution_model": "close_to_close_shifted",
+                "transaction_cost_bps": 10.0,
+                "final_equity_ratio": 1.4,
+                "strategy_max_dd": -0.50,
+                "status": "ok",
+                "output_dir": str(baseline_output),
+                "error": "",
+            },
             {
                 "family": "VolTargetTQQQStrategy",
                 "category": "tqqq_voltarget",
@@ -502,4 +532,8 @@ def test_voltarget_deep_report_includes_sensitivity_and_alternate_variants(tmp_p
     assert "## Alternate walk-forward variants" in report
     assert "## TQQQ VolTarget candidates" in report
     assert "## SOXL sector-bet candidates" in report
+    assert "## One-year contribution audit" in report
     assert "SOXL rows are sector-bet diagnostics" in report
+    contribution = pd.read_csv(tmp_path / "one_year_contribution.csv")
+    assert "contribution_to_total_log_excess" in contribution.columns
+    assert "VolTargetTQQQStrategy" in set(contribution["family"])

@@ -22,6 +22,10 @@ from .experiments import (
 )
 from .fairness import write_voltarget_fairness_outputs
 from .reports import compare_to_benchmark, generate_tournament_report
+from .yearly_contribution import (
+    build_one_year_contribution_from_variants,
+    markdown_one_year_contribution_table,
+)
 
 
 DEFAULT_WALK_FORWARD_VARIANTS = (
@@ -727,6 +731,8 @@ def _write_voltarget_deep_report(
         return None
 
     report_path = output_dir / "voltarget_deep_report.md"
+    contribution = build_one_year_contribution_from_variants(summary, variants)
+    contribution.to_csv(output_dir / "one_year_contribution.csv", index=False)
     sections = [
         ("TQQQ VolTarget candidates", "tqqq_voltarget"),
         ("VolTarget + Governor candidates", "tqqq_voltarget_governor"),
@@ -841,6 +847,30 @@ def _write_voltarget_deep_report(
                 ["record_type", "family", "category", "variant", "status", "error", "rejection_reason"],
                 max_rows=40,
             ),
+            "",
+            "## One-year contribution audit",
+            "Contribution is computed from yearly log excess return: `log(1 + strategy_return) - log(1 + TQQQ_return)`. A candidate is flagged when one year contributes more than 60% of positive total log excess return.",
+            "",
+            _markdown_table(
+                contribution.drop_duplicates(
+                    subset=["family", "category", "variant"],
+                    keep="first",
+                )
+                if not contribution.empty
+                else contribution,
+                [
+                    "family",
+                    "category",
+                    "variant",
+                    "largest_contribution_year",
+                    "largest_single_year_contribution_share",
+                    "one_year_contributes_more_than_60pct",
+                    "audit_status",
+                ],
+                max_rows=30,
+            ),
+            "",
+            markdown_one_year_contribution_table(contribution, max_rows=40),
             "",
             "## Interpretation Guardrails",
             "- SOXL rows are sector-bet diagnostics and are not mixed into the TQQQ-only ranking files.",

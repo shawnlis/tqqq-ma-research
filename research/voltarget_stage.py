@@ -10,6 +10,12 @@ from .fairness import (
     STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
     same_max_constant_ratio_value,
 )
+from .yearly_contribution import (
+    ONE_YEAR_CONTRIBUTION_COLUMNS,
+    candidate_contribution_summary,
+    markdown_one_year_contribution_table,
+    read_yearly_contribution_from_output,
+)
 
 
 STAGE_SUMMARY_COLUMNS = [
@@ -156,34 +162,6 @@ def _baseline_output_path(baseline: Optional[pd.Series]) -> Optional[Path]:
     return Path(value)
 
 
-def _year_dominance(output_dir: Path) -> Dict[str, Any]:
-    yearly = _read_csv(output_dir / "yearly_returns.csv")
-    if yearly.empty or not {"year", "strategy_return", "benchmark_return"}.issubset(yearly.columns):
-        return {
-            "performance_dominated_by_one_year": "",
-            "dominant_year": "",
-            "dominant_year_excess_share": np.nan,
-        }
-    excess = pd.to_numeric(yearly["strategy_return"], errors="coerce") - pd.to_numeric(
-        yearly["benchmark_return"],
-        errors="coerce",
-    )
-    positive = excess[excess > 0.0]
-    if positive.empty or positive.sum() <= 0.0:
-        return {
-            "performance_dominated_by_one_year": False,
-            "dominant_year": "",
-            "dominant_year_excess_share": 0.0,
-        }
-    idx = positive.idxmax()
-    share = float(positive.loc[idx] / positive.sum())
-    return {
-        "performance_dominated_by_one_year": bool(share > 0.60),
-        "dominant_year": str(yearly.loc[idx, "year"]),
-        "dominant_year_excess_share": share,
-    }
-
-
 def _max_exposure_gate(baseline_ratio: float, selected_values: str, selected_max: float) -> tuple[str, str]:
     if not pd.notna(baseline_ratio) or baseline_ratio <= 1.0:
         return "not_applicable_no_raw_outperformance", "false"
@@ -218,6 +196,7 @@ def summarize_voltarget_stage(output_dir: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"Missing tournament_summary.csv in {output_dir}")
 
     rows: list[Dict[str, Any]] = []
+    contribution_rows: list[Dict[str, Any]] = []
     for _, strategy in summary.iterrows():
         family = str(strategy.get("family", ""))
         category = str(strategy.get("category", ""))
@@ -239,6 +218,26 @@ def summarize_voltarget_stage(output_dir: Path) -> pd.DataFrame:
 
         baseline = _first_ok(group, "standard_5y_1y__10bps") if not group.empty else None
         output_path = _baseline_output_path(baseline)
+        baseline_variant = str(baseline.get("variant", "standard_5y_1y__10bps")) if baseline is not None else ""
+        contribution = (
+            read_yearly_contribution_from_output(
+                output_path,
+                metadata={
+                    "family": family,
+                    "category": category,
+                    "experiment_name": str(strategy.get("experiment_name", "")),
+                    "config_path": str(strategy.get("config_path", "")),
+                    "variant": baseline_variant,
+                    "walk_forward_variant": str(baseline.get("walk_forward_variant", "")) if baseline is not None else "",
+                    "transaction_cost_bps": baseline.get("transaction_cost_bps", "") if baseline is not None else "",
+                    "execution_model": str(baseline.get("execution_model", "")) if baseline is not None else "",
+                    "output_dir": str(output_path),
+                },
+            )
+            if output_path
+            else pd.DataFrame(columns=ONE_YEAR_CONTRIBUTION_COLUMNS)
+        )
+        contribution_rows.extend(contribution.to_dict("records"))
         selected_values, selected_max = _selected_max_exposure(output_path) if output_path else ("", np.nan)
         fairness = (
             _same_max_fairness(output_path)
@@ -248,15 +247,7 @@ def summarize_voltarget_stage(output_dir: Path) -> pd.DataFrame:
                 "max_drawdown_difference_vs_same_max_constant_tqqq": np.nan,
             }
         )
-        dominance = (
-            _year_dominance(output_path)
-            if output_path
-            else {
-                "performance_dominated_by_one_year": "",
-                "dominant_year": "",
-                "dominant_year_excess_share": np.nan,
-            }
-        )
+        dominance = candidate_contribution_summary(contribution)
         baseline_ratio = _safe_float(strategy.get("baseline_final_equity_ratio"))
         max_gate, max_1_beats = _max_exposure_gate(baseline_ratio, selected_values, selected_max)
 
@@ -288,14 +279,16 @@ def summarize_voltarget_stage(output_dir: Path) -> pd.DataFrame:
         )
 
     stage = pd.DataFrame(rows, columns=STAGE_SUMMARY_COLUMNS)
+    contribution_audit = pd.DataFrame(contribution_rows, columns=ONE_YEAR_CONTRIBUTION_COLUMNS)
     stage.to_csv(output_dir / "voltarget_stage_summary.csv", index=False)
-    _write_stage_report(output_dir / "voltarget_stage_report.md", stage)
+    contribution_audit.to_csv(output_dir / "one_year_contribution.csv", index=False)
+    _write_stage_report(output_dir / "voltarget_stage_report.md", stage, contribution_audit)
     print(stage.to_string(index=False))
     print(f"\nVolTarget stage summary written to: {output_dir / 'voltarget_stage_summary.csv'}")
     return stage
 
 
-def _write_stage_report(path: Path, stage: pd.DataFrame) -> None:
+def _write_stage_report(path: Path, stage: pd.DataFrame, contribution: pd.DataFrame) -> None:
     best = stage.sort_values("best_final_equity_ratio", ascending=False).head(1)
     best_line = "No completed Stage rows were available."
     if not best.empty:
@@ -359,6 +352,21 @@ def _write_stage_report(path: Path, stage: pd.DataFrame) -> None:
                 "max_drawdown_difference_vs_same_max_constant_tqqq",
             ],
         ),
+        "",
+        "## One-Year Contribution Audit",
+        "Contribution is computed from yearly log excess return: `log(1 + strategy_return) - log(1 + TQQQ_return)`. A candidate is flagged when one year contributes more than 60% of positive total log excess return.",
+        "",
+        _markdown_table(
+            stage,
+            [
+                "family",
+                "dominant_year",
+                "dominant_year_excess_share",
+                "performance_dominated_by_one_year",
+            ],
+        ),
+        "",
+        markdown_one_year_contribution_table(contribution, max_rows=40),
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")

@@ -2120,6 +2120,10 @@ def run_experiment_config(config_path: Path, objective_override: Optional[str] =
     config = load_yaml_file(config_path)
     if objective_override:
         config["objective"] = str(objective_override)
+    if str(config.get("experiment_type", "")).lower() == "voltarget_synthetic_history":
+        from .voltarget_synthetic_history import run_voltarget_synthetic_history
+
+        return run_voltarget_synthetic_history(config, config_path=config_path)
     return run_experiment(config, config_path=config_path)
 
 

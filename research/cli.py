@@ -41,6 +41,7 @@ from .replay import replay_regime_windows
 from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
 from .voltarget_timing_audit import audit_voltarget_timing
+from .voltarget_stage import summarize_voltarget_stage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -513,6 +514,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Proceed despite BASELINE_GATE_FAILED.txt after explicitly accepting the baseline regression.",
     )
 
+    summarize_voltarget_stage_parser = subparsers.add_parser(
+        "summarize-voltarget-stage",
+        help="Summarize staged VolTarget tournament outputs.",
+    )
+    summarize_voltarget_stage_parser.add_argument(
+        "output_dir",
+        help="Tournament stage output directory containing tournament_summary.csv.",
+    )
+
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -782,7 +792,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 accept_baseline_regression=args.accept_baseline_regression,
             )
             return 0
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "summarize-voltarget-stage":
+        try:
+            summarize_voltarget_stage(Path(args.output_dir))
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
     if command == "run-open-questions":

@@ -232,6 +232,175 @@ def test_tournament_voltarget_deep_dry_run_succeeds(tmp_path: Path) -> None:
     assert dry_run["estimated_runtime_seconds"].astype(float).sum() > 0.0
 
 
+def test_tournament_voltarget_stage1_dry_run_is_smaller_than_deep(tmp_path: Path) -> None:
+    stage1_config = yaml.safe_load(
+        (Path("configs") / "tournament_voltarget_stage1.yaml").read_text(encoding="utf-8")
+    )
+    stage1_config["output_dir"] = str(tmp_path / "voltarget_stage1")
+    stage1_path = tmp_path / "tournament_voltarget_stage1.yaml"
+    stage1_path.write_text(yaml.safe_dump(stage1_config), encoding="utf-8")
+
+    deep_config = yaml.safe_load(
+        (Path("configs") / "tournament_voltarget_deep.yaml").read_text(encoding="utf-8")
+    )
+    deep_config["output_dir"] = str(tmp_path / "voltarget_deep")
+    deep_path = tmp_path / "tournament_voltarget_deep.yaml"
+    deep_path.write_text(yaml.safe_dump(deep_config), encoding="utf-8")
+
+    assert main(["run-tournament", str(stage1_path), "--dry-run"]) == 0
+    assert main(["run-tournament", str(deep_path), "--dry-run"]) == 0
+
+    stage1 = pd.read_csv(tmp_path / "voltarget_stage1" / "tournament_dry_run_summary.csv")
+    deep = pd.read_csv(tmp_path / "voltarget_deep" / "tournament_dry_run_summary.csv")
+
+    assert set(stage1["family"]) == {
+        "VolTargetTQQQStrategy",
+        "VolTarget + DrawdownGovernor",
+        "CoreOverlay + Rebound comparator",
+    }
+    assert "MarketInternals VolTarget" not in set(stage1["family"])
+    assert "SOXL VolTarget sector bet" not in set(stage1["family"])
+    assert set(stage1["execution_models"]) == {"close_to_close_shifted"}
+    assert (stage1["variant_count"] == 9).all()
+    assert stage1["estimated_runtime_seconds"].astype(float).sum() < deep[
+        "estimated_runtime_seconds"
+    ].astype(float).sum()
+
+
+def test_summarize_voltarget_stage_separates_roles(tmp_path: Path) -> None:
+    output_dir = tmp_path / "stage_out"
+    output_dir.mkdir()
+    baseline_dir = output_dir / "experiments" / "voltarget" / "standard_5y_1y__10bps"
+    baseline_dir.mkdir(parents=True)
+    pd.DataFrame({"max_exposure": [1.0, 1.5, 1.5]}).to_csv(
+        baseline_dir / "walk_forward_windows.csv",
+        index=False,
+    )
+    pd.DataFrame(
+        [
+            {
+                "is_same_max_exposure_benchmark": True,
+                "ratio_versus_same_max_constant_tqqq": 0.97,
+                "max_drawdown_difference_vs_same_max_constant_tqqq": -0.05,
+            }
+        ]
+    ).to_csv(baseline_dir / "constant_leverage_benchmark_summary.csv", index=False)
+    pd.DataFrame(
+        [
+            {"year": 2020, "strategy_return": 0.50, "benchmark_return": 0.30},
+            {"year": 2021, "strategy_return": 0.20, "benchmark_return": 0.10},
+        ]
+    ).to_csv(baseline_dir / "yearly_returns.csv", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "family": "VolTargetTQQQStrategy",
+                "category": "tqqq_voltarget",
+                "baseline_variant": "standard_5y_1y__10bps",
+                "baseline_final_equity_ratio": 1.05,
+                "baseline_strategy_max_dd": -0.55,
+                "worst_strategy_max_dd": -0.60,
+                "robustness_score": 0.80,
+                "cost_10_final_equity_ratio": 1.05,
+                "cost_25_final_equity_ratio": 1.01,
+                "cost_50_final_equity_ratio": 0.96,
+                "successful_variants": 5,
+                "rejection_reason": "",
+            },
+            {
+                "family": "VolTarget + DrawdownGovernor",
+                "category": "tqqq_voltarget_governor",
+                "baseline_variant": "standard_5y_1y__10bps",
+                "baseline_final_equity_ratio": 0.98,
+                "baseline_strategy_max_dd": -0.45,
+                "worst_strategy_max_dd": -0.50,
+                "robustness_score": 0.50,
+                "cost_10_final_equity_ratio": 0.98,
+                "cost_25_final_equity_ratio": 0.95,
+                "cost_50_final_equity_ratio": 0.90,
+                "successful_variants": 5,
+                "rejection_reason": "failed raw outperformance",
+            },
+            {
+                "family": "CoreOverlay + Rebound comparator",
+                "category": "secondary_comparator",
+                "baseline_variant": "standard_5y_1y__10bps",
+                "baseline_final_equity_ratio": 0.92,
+                "baseline_strategy_max_dd": -0.40,
+                "worst_strategy_max_dd": -0.48,
+                "robustness_score": 0.40,
+                "cost_10_final_equity_ratio": 0.92,
+                "cost_25_final_equity_ratio": 0.90,
+                "cost_50_final_equity_ratio": 0.86,
+                "successful_variants": 5,
+                "rejection_reason": "comparator only",
+            },
+        ]
+    ).to_csv(output_dir / "tournament_summary.csv", index=False)
+
+    variant_rows = []
+    for family, category in [
+        ("VolTargetTQQQStrategy", "tqqq_voltarget"),
+        ("VolTarget + DrawdownGovernor", "tqqq_voltarget_governor"),
+        ("CoreOverlay + Rebound comparator", "secondary_comparator"),
+    ]:
+        for variant, wf, cost, ratio in [
+            ("standard_5y_1y__10bps", "standard_5y_1y", 10.0, 1.05),
+            ("standard_5y_1y__25bps", "standard_5y_1y", 25.0, 1.01),
+            ("standard_5y_1y__50bps", "standard_5y_1y", 50.0, 0.96),
+            ("alternate_3y_1y__10bps", "alternate_3y_1y", 10.0, 1.02),
+            ("alternate_7y_1y__10bps", "alternate_7y_1y", 10.0, 0.99),
+        ]:
+            variant_rows.append(
+                {
+                    "family": family,
+                    "category": category,
+                    "variant": variant,
+                    "walk_forward_variant": wf,
+                    "transaction_cost_bps": cost,
+                    "final_equity_ratio": ratio,
+                    "strategy_max_dd": -0.50,
+                    "status": "ok",
+                    "output_dir": str(baseline_dir) if family == "VolTargetTQQQStrategy" else "",
+                }
+            )
+    pd.DataFrame(variant_rows).to_csv(output_dir / "tournament_variant_results.csv", index=False)
+
+    assert main(["summarize-voltarget-stage", str(output_dir)]) == 0
+
+    stage = pd.read_csv(output_dir / "voltarget_stage_summary.csv")
+    assert set(stage["stage_role"]) == {"voltarget", "governor", "core_overlay_comparator"}
+    voltarget = stage[stage["stage_role"] == "voltarget"].iloc[0]
+    assert voltarget["selected_max_exposure_values"] == "1;1.5"
+    assert voltarget["ratio_versus_same_max_constant_tqqq"] == 0.97
+    report = (output_dir / "voltarget_stage_report.md").read_text(encoding="utf-8")
+    assert "## 10/25/50 bps Comparison" in report
+    assert "## 5/1, 3/1, 7/1 Walk-Forward Comparison" in report
+    assert "## Same-Max-Exposure Constant Benchmark" in report
+
+
+def test_tournament_voltarget_stage2_template_is_not_active_in_stage1(tmp_path: Path) -> None:
+    stage1 = yaml.safe_load(
+        (Path("configs") / "tournament_voltarget_stage1.yaml").read_text(encoding="utf-8")
+    )
+    assert all(
+        "tournament_voltarget_stage2_template.yaml" not in str(entry.get("config", ""))
+        for entry in stage1["strategies"]
+    )
+
+    template = yaml.safe_load(
+        (Path("configs") / "tournament_voltarget_stage2_template.yaml").read_text(encoding="utf-8")
+    )
+    assert template["template_only"] is True
+    assert not template.get("strategies")
+
+    template["output_dir"] = str(tmp_path / "stage2_template")
+    template_path = tmp_path / "stage2_template.yaml"
+    template_path.write_text(yaml.safe_dump(template), encoding="utf-8")
+    assert main(["run-tournament", str(template_path), "--dry-run"]) == 1
+
+
 def test_voltarget_deep_rankings_exclude_soxl_sector_bets(tmp_path: Path) -> None:
     summary = pd.DataFrame(
         [

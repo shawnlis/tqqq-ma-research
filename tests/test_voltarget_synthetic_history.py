@@ -5,6 +5,10 @@ import pandas as pd
 import yaml
 
 from research.cli import main
+from research.fairness import (
+    LEGACY_SAME_MAX_CONSTANT_RATIO,
+    STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
+)
 
 
 def _write_qqq_only_history(path: Path) -> None:
@@ -122,7 +126,15 @@ def test_synthetic_voltarget_report_includes_full_history_and_crash_period_rows(
         / "voltarget_synthetic_history"
         / "voltarget_synthetic_history_report.md"
     ).read_text(encoding="utf-8")
+    summary = pd.read_csv(tmp_path / "voltarget_synthetic_history" / "voltarget_synthetic_history.csv")
+    assert STRATEGY_VS_SAME_MAX_CONSTANT_RATIO in summary.columns
+    assert LEGACY_SAME_MAX_CONSTANT_RATIO not in summary.columns
     assert "synthetic_full_qqq_history" in report
     assert "synthetic_2000_2002" in report
     assert "synthetic_2008" in report
     assert "Full-History And Crash-Period Rows" in report
+    assert "strategy_final_equity / constant_same_max_exposure_final_equity" in report
+    assert "Initial transaction cost is included" in report
+    assert "not floored" in report
+    assert "Leverage drag" in report
+    assert "VolTarget differs" in report

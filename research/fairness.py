@@ -21,6 +21,8 @@ CONSTANT_TQQQ_LABELS: Dict[float, str] = {
     1.5: "constant_tqqq_1.5",
     2.0: "constant_tqqq_2.0",
 }
+STRATEGY_VS_SAME_MAX_CONSTANT_RATIO = "strategy_vs_same_max_constant_ratio"
+LEGACY_SAME_MAX_CONSTANT_RATIO = "ratio_versus_same_max_constant_tqqq"
 
 
 def _format_exposure(value: float) -> str:
@@ -100,6 +102,13 @@ def _performance_from_returns(bt: pd.DataFrame) -> Dict[str, float]:
         "total_turnover": float(bt["turnover"].sum()) if "turnover" in bt.columns else np.nan,
         "total_transaction_cost": float(bt["cost"].sum()) if "cost" in bt.columns else np.nan,
     }
+
+
+def same_max_constant_ratio_value(row: pd.Series) -> float:
+    """Read the clear ratio column, falling back to older saved artifacts."""
+    if STRATEGY_VS_SAME_MAX_CONSTANT_RATIO in row:
+        return float(row.get(STRATEGY_VS_SAME_MAX_CONSTANT_RATIO))
+    return float(row.get(LEGACY_SAME_MAX_CONSTANT_RATIO, np.nan))
 
 
 def infer_selected_max_exposure(
@@ -200,7 +209,7 @@ def build_constant_leverage_benchmark_summary(
         if one_x_metrics["final_equity"] != 0.0
         else np.nan
     )
-    ratio_vs_same_max = (
+    strategy_vs_same_max_constant_ratio = (
         strategy_metrics["final_equity"] / same_max_metrics["final_equity"]
         if same_max_metrics["final_equity"] != 0.0
         else np.nan
@@ -240,7 +249,7 @@ def build_constant_leverage_benchmark_summary(
                 "constant_total_turnover": metrics["total_turnover"],
                 "constant_total_transaction_cost": metrics["total_transaction_cost"],
                 "ratio_versus_1x_tqqq": ratio_vs_1x,
-                "ratio_versus_same_max_constant_tqqq": ratio_vs_same_max,
+                STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: strategy_vs_same_max_constant_ratio,
                 "max_drawdown_difference_vs_same_max_constant_tqqq": max_dd_diff,
                 "cagr_difference_vs_same_max_constant_tqqq": cagr_diff,
                 "sharpe_difference_vs_same_max_constant_tqqq": sharpe_diff,
@@ -289,13 +298,24 @@ def _write_voltarget_fairness_report(path: Path, summary: pd.DataFrame) -> None:
         "This diagnostic compares the VolTarget candidate against constant TQQQ exposure baselines over the exact stitched dates.",
         "The same-max-exposure benchmark is the constant TQQQ exposure closest to the selected VolTarget max_exposure.",
         "",
+        "## Method",
+        "",
+        f"- `{STRATEGY_VS_SAME_MAX_CONSTANT_RATIO}` is `strategy_final_equity / constant_same_max_exposure_final_equity`.",
+        "- Constant exposure definition: a fixed daily target weight in the trade asset over the same stitched dates, e.g. `2.0` means daily strategy return is modeled as `2.0 * trade_asset_daily_return` before transaction costs.",
+        "- Initial transaction cost is included. The constant benchmark pays the configured transaction cost on the first day's move from zero exposure to the constant target exposure.",
+        "- The constant benchmark has no signal changes, so no additional target-weight turnover is charged after the initial trade.",
+        "- Equity is not floored. A sufficiently large adverse daily return can take a leveraged constant-exposure path to zero or negative equity.",
+        "- Leverage drag is handled through daily compounding of scaled daily returns. No additional portfolio-level borrowing, financing, or slippage drag is added beyond the trade asset price series and configured transaction costs.",
+        "- If the trade asset is real or synthetic TQQQ, ETF-level leverage drag and synthetic expense/financing assumptions are already embedded in that trade asset return series.",
+        "- VolTarget differs because its exposure changes over time from realized volatility, trend, momentum, and crash rules; the constant benchmark holds one fixed exposure throughout.",
+        "",
         "## Key Comparisons",
         "",
         f"- Ratio versus 1.0x TQQQ: `{float(one_x_row['ratio_versus_1x_tqqq']):.6f}`",
         (
-            "- Ratio versus same-max-exposure benchmark "
+            "- Strategy / same-max constant exposure final equity "
             f"({float(same_row['same_max_exposure']):g}x): "
-            f"`{float(same_row['ratio_versus_same_max_constant_tqqq']):.6f}`"
+            f"`{same_max_constant_ratio_value(same_row):.6f}`"
         ),
         (
             "- Max drawdown difference versus same-max-exposure benchmark: "

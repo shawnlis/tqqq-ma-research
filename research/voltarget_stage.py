@@ -6,6 +6,11 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
+from .fairness import (
+    STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
+    same_max_constant_ratio_value,
+)
+
 
 STAGE_SUMMARY_COLUMNS = [
     "family",
@@ -26,7 +31,7 @@ STAGE_SUMMARY_COLUMNS = [
     "max_selected_max_exposure",
     "max_exposure_gt_1_required_to_beat_tqqq",
     "max_exposure_1_beats_tqqq",
-    "ratio_versus_same_max_constant_tqqq",
+    STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
     "max_drawdown_difference_vs_same_max_constant_tqqq",
     "performance_dominated_by_one_year",
     "dominant_year",
@@ -129,15 +134,13 @@ def _same_max_fairness(output_dir: Path) -> Dict[str, float]:
     fairness = _read_csv(output_dir / "constant_leverage_benchmark_summary.csv")
     if fairness.empty or "is_same_max_exposure_benchmark" not in fairness.columns:
         return {
-            "ratio_versus_same_max_constant_tqqq": np.nan,
+            STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: np.nan,
             "max_drawdown_difference_vs_same_max_constant_tqqq": np.nan,
         }
     mask = fairness["is_same_max_exposure_benchmark"].map(_truthy)
     row = fairness[mask].iloc[0] if mask.any() else fairness.iloc[0]
     return {
-        "ratio_versus_same_max_constant_tqqq": _safe_float(
-            row.get("ratio_versus_same_max_constant_tqqq")
-        ),
+        STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: same_max_constant_ratio_value(row),
         "max_drawdown_difference_vs_same_max_constant_tqqq": _safe_float(
             row.get("max_drawdown_difference_vs_same_max_constant_tqqq")
         ),
@@ -241,7 +244,7 @@ def summarize_voltarget_stage(output_dir: Path) -> pd.DataFrame:
             _same_max_fairness(output_path)
             if output_path
             else {
-                "ratio_versus_same_max_constant_tqqq": np.nan,
+                STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: np.nan,
                 "max_drawdown_difference_vs_same_max_constant_tqqq": np.nan,
             }
         )
@@ -352,7 +355,7 @@ def _write_stage_report(path: Path, stage: pd.DataFrame) -> None:
             [
                 "family",
                 "selected_max_exposure_values",
-                "ratio_versus_same_max_constant_tqqq",
+                STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
                 "max_drawdown_difference_vs_same_max_constant_tqqq",
             ],
         ),

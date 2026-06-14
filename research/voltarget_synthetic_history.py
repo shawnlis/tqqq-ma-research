@@ -8,7 +8,11 @@ from typing import Any, Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
-from .fairness import build_constant_leverage_benchmark_summary
+from .fairness import (
+    STRATEGY_VS_SAME_MAX_CONSTANT_RATIO,
+    build_constant_leverage_benchmark_summary,
+    same_max_constant_ratio_value,
+)
 from .reports import compare_to_benchmark
 
 
@@ -224,7 +228,7 @@ def _blank_row(**values: Any) -> Dict[str, Any]:
         "benchmark_max_dd": np.nan,
         "raw_outperformance_pass": np.nan,
         "ratio_versus_1x_tqqq": np.nan,
-        "ratio_versus_same_max_constant_tqqq": np.nan,
+        STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: np.nan,
         "max_drawdown_difference_vs_same_max_constant_tqqq": np.nan,
         "cagr_difference_vs_same_max_constant_tqqq": np.nan,
         "sharpe_difference_vs_same_max_constant_tqqq": np.nan,
@@ -311,9 +315,7 @@ def _run_case(
             {
                 "benchmark_source": benchmark_source,
                 "ratio_versus_1x_tqqq": float(same_max["ratio_versus_1x_tqqq"]),
-                "ratio_versus_same_max_constant_tqqq": float(
-                    same_max["ratio_versus_same_max_constant_tqqq"]
-                ),
+                STRATEGY_VS_SAME_MAX_CONSTANT_RATIO: same_max_constant_ratio_value(same_max),
                 "max_drawdown_difference_vs_same_max_constant_tqqq": float(
                     same_max["max_drawdown_difference_vs_same_max_constant_tqqq"]
                 ),
@@ -420,9 +422,18 @@ def _write_report(path: Path, summary: pd.DataFrame, config: Dict[str, Any]) -> 
         f"- Benchmark: `synthetic 3x QQQ` when `use_synthetic_leverage` is true",
         f"- {best_line}",
         "",
+        "## Same-Max Constant Exposure Method",
+        "",
+        f"- `{STRATEGY_VS_SAME_MAX_CONSTANT_RATIO}` is `strategy_final_equity / constant_same_max_exposure_final_equity`.",
+        "- The constant exposure is the fixed daily target weight closest to the VolTarget selected `max_exposure` for that row.",
+        "- Initial transaction cost is included on the move from zero exposure to the constant target exposure.",
+        "- The constant exposure path is not floored; large leveraged daily losses can take equity to zero or negative values.",
+        "- Leverage drag is the daily compounding effect of scaled daily returns. No extra portfolio-level borrowing or slippage drag is added beyond configured transaction costs and the real or synthetic trade asset return series.",
+        "- VolTarget differs because exposure varies over time with realized volatility, trend, momentum, and crash controls.",
+        "",
         "## Full-History And Crash-Period Rows",
         "",
-        "| Period | Max Exposure | Target Vol | Status | Final Equity Ratio | Same-Max Constant Ratio | Strategy Max DD | Benchmark Max DD |",
+        "| Period | Max Exposure | Target Vol | Status | Final Equity Ratio | Strategy / Same-Max Constant | Strategy Max DD | Benchmark Max DD |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
     ]
     for _, row in summary.iterrows():
@@ -433,7 +444,7 @@ def _write_report(path: Path, summary: pd.DataFrame, config: Dict[str, Any]) -> 
             f"{_fmt(row.get('target_ann_vol'))} | "
             f"{row.get('status', '')} | "
             f"{_fmt(row.get('final_equity_ratio'))} | "
-            f"{_fmt(row.get('ratio_versus_same_max_constant_tqqq'))} | "
+            f"{_fmt(row.get(STRATEGY_VS_SAME_MAX_CONSTANT_RATIO))} | "
             f"{_fmt(row.get('strategy_max_dd'))} | "
             f"{_fmt(row.get('benchmark_max_dd'))} |"
         )

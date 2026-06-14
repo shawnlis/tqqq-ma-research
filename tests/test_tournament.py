@@ -280,7 +280,7 @@ def test_summarize_voltarget_stage_separates_roles(tmp_path: Path) -> None:
         [
             {
                 "is_same_max_exposure_benchmark": True,
-                "ratio_versus_same_max_constant_tqqq": 0.97,
+                "strategy_vs_same_max_constant_ratio": 0.97,
                 "max_drawdown_difference_vs_same_max_constant_tqqq": -0.05,
             }
         ]
@@ -373,7 +373,7 @@ def test_summarize_voltarget_stage_separates_roles(tmp_path: Path) -> None:
     assert set(stage["stage_role"]) == {"voltarget", "governor", "core_overlay_comparator"}
     voltarget = stage[stage["stage_role"] == "voltarget"].iloc[0]
     assert voltarget["selected_max_exposure_values"] == "1;1.5"
-    assert voltarget["ratio_versus_same_max_constant_tqqq"] == 0.97
+    assert voltarget["strategy_vs_same_max_constant_ratio"] == 0.97
     report = (output_dir / "voltarget_stage_report.md").read_text(encoding="utf-8")
     assert "## 10/25/50 bps Comparison" in report
     assert "## 5/1, 3/1, 7/1 Walk-Forward Comparison" in report

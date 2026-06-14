@@ -71,6 +71,20 @@ REQUIRED_EXPERIMENT_FIELDS = {
     "output_dir",
 }
 DEFAULT_SECONDS_PER_ESTIMATED_EVALUATION = 0.002
+REQUIRED_SUCCESS_OUTPUTS = (
+    "stitched_equity.csv",
+    "walk_forward_windows.csv",
+    "same_period_benchmark_summary.csv",
+    "yearly_returns.csv",
+    "run_config.json",
+    "report.md",
+)
+
+
+class ExperimentInfrastructureError(RuntimeError):
+    def __init__(self, classification: str, message: str):
+        self.classification = str(classification)
+        super().__init__(message)
 
 
 def load_yaml_file(path: Path) -> Dict[str, Any]:
@@ -193,6 +207,96 @@ def _runtime_profile_fields(
         }
     )
     return fields
+
+
+def _write_error_artifacts(
+    *,
+    output_dir: Path,
+    config: Dict[str, Any],
+    config_path: Optional[Path],
+    classification: str,
+    error: str,
+    estimate: Optional[Dict[str, Any]] = None,
+) -> None:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    estimate = dict(estimate or {})
+    missing_outputs = [
+        filename
+        for filename in REQUIRED_SUCCESS_OUTPUTS
+        if not (output_dir / filename).exists()
+    ]
+    row = {
+        "status": "infrastructure_failure",
+        "classification": classification,
+        "experiment_name": config.get("experiment_name", ""),
+        "strategy_name": config.get("strategy_name", ""),
+        "config_path": str(config_path) if config_path is not None else "",
+        "output_dir": str(output_dir),
+        "benchmark_symbol": str(config.get("benchmark_symbol", "")).upper(),
+        "transaction_cost_bps": config.get("transaction_cost_bps", np.nan),
+        "train_years": config.get("train_years", np.nan),
+        "test_years": config.get("test_years", np.nan),
+        "objective": config.get("objective", ""),
+        "error": error,
+        "missing_required_outputs": ";".join(missing_outputs),
+    }
+    row.update(estimate)
+    pd.DataFrame([row]).to_csv(output_dir / "error_summary.csv", index=False)
+    lines = [
+        f"# Experiment Error: {config.get('experiment_name', output_dir.name)}",
+        "",
+        "This run failed the infrastructure output contract.",
+        "",
+        f"- Classification: `{classification}`",
+        f"- Strategy: `{config.get('strategy_name', '')}`",
+        f"- Config path: `{str(config_path) if config_path is not None else ''}`",
+        f"- Output dir: `{output_dir}`",
+        f"- Error: `{error}`",
+        f"- Missing required outputs: `{';'.join(missing_outputs)}`",
+        "",
+    ]
+    (output_dir / "error_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _fail_experiment_contract(
+    *,
+    output_dir: Path,
+    config: Dict[str, Any],
+    config_path: Optional[Path],
+    classification: str,
+    error: str,
+    estimate: Optional[Dict[str, Any]] = None,
+) -> None:
+    _write_error_artifacts(
+        output_dir=output_dir,
+        config=config,
+        config_path=config_path,
+        classification=classification,
+        error=error,
+        estimate=estimate,
+    )
+    raise ExperimentInfrastructureError(classification, error)
+
+
+def _assert_successful_output_contract(output_dir: Path, config: Dict[str, Any], config_path: Optional[Path], estimate: Dict[str, Any]) -> None:
+    missing = [filename for filename in REQUIRED_SUCCESS_OUTPUTS if not (Path(output_dir) / filename).exists()]
+    if missing:
+        classification = (
+            "empty_stitched_equity"
+            if "stitched_equity.csv" in missing
+            else "benchmark_output_failure"
+            if "same_period_benchmark_summary.csv" in missing
+            else "output_contract_failure"
+        )
+        _fail_experiment_contract(
+            output_dir=Path(output_dir),
+            config=config,
+            config_path=config_path,
+            classification=classification,
+            error=f"Successful run is missing required outputs: {missing}",
+            estimate=estimate,
+        )
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -2068,23 +2172,48 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
     _require_experiment_fields(config)
     estimate = estimate_experiment_workload(config, include_full_experiment_overhead=True)
     started = time.perf_counter()
+    output_dir = Path(config["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     data = _load_price_data(config)
     market_internals_status = _market_internals_run_status(config, data)
     rotation_asset_status = _rotation_asset_status(config, data)
     wf_table, stitched, grid_size = _run_walk_forward(config, data)
     if stitched.empty:
-        raise ValueError(f"Experiment produced no stitched equity: {config['experiment_name']}")
-
-    output_dir = Path(config["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="empty_stitched_equity",
+            error=f"Experiment produced no stitched equity: {config['experiment_name']}",
+            estimate=estimate,
+        )
 
     benchmark_symbol = str(config["benchmark_symbol"]).upper()
-    benchmark_summary, yearly_returns = compare_to_benchmark(
-        stitched,
-        data,
-        benchmark_symbol=benchmark_symbol,
-    )
+    try:
+        benchmark_summary, yearly_returns = compare_to_benchmark(
+            stitched,
+            data,
+            benchmark_symbol=benchmark_symbol,
+        )
+    except Exception as exc:
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="benchmark_output_failure",
+            error=str(exc),
+            estimate=estimate,
+        )
+    if benchmark_summary.empty or yearly_returns.empty:
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="benchmark_output_failure",
+            error="Benchmark comparison produced empty summary/yearly outputs.",
+            estimate=estimate,
+        )
     synthetic_tracking_summary = None
     synthetic_tracking_daily = None
     if bool(config.get("use_synthetic_leverage", False)):
@@ -2205,6 +2334,7 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
             wf_table=wf_table,
         )
     generate_experiment_report(output_dir=output_dir, config=run_config_payload, price_data=data)
+    _assert_successful_output_contract(output_dir, config, config_path, estimate)
 
     row = benchmark_summary.iloc[0].to_dict()
     asset_config = _asset_config(config)

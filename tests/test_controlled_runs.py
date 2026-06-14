@@ -132,3 +132,34 @@ def test_summarize_controlled_runs_cli_writes_default_report(tmp_path: Path, mon
     assert len(summary) == 5
     assert set(summary["classification"]) == {"infrastructure failure"}
     assert set(summary["output_contract_status"]) == {"missing_same_period_benchmark_summary"}
+
+
+def test_summarize_controlled_runs_gate_mode_reads_gate_outputs_not_full_outputs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    full_dir = tmp_path / "outputs" / "core_overlay_tqqq"
+    gate_dir = tmp_path / "outputs" / "controlled_gate" / "core_overlay_tqqq_gate"
+    existing_dir = tmp_path / "ma_search_output_v11"
+    regime_dir = tmp_path / "outputs" / "regime_tqqq"
+
+    for path, ratio in [
+        (existing_dir, 0.8),
+        (regime_dir, 0.7),
+        (full_dir, 9.9),
+        (gate_dir, 1.1),
+        (tmp_path / "outputs" / "controlled_gate" / "core_overlay_with_rebound_gate", 1.2),
+        (tmp_path / "outputs" / "controlled_gate" / "vol_target_tqqq_gate", 1.3),
+    ]:
+        _write_summary(path, final_equity_ratio=ratio, raw_pass=ratio > 1.0, strategy_final=ratio, benchmark_final=1.0)
+        _write_yearly(path, [{"year": 2020, "strategy_return": ratio - 1.0, "benchmark_return": 0.0}])
+        _write_stitched(path)
+
+    assert main(["summarize-controlled-runs", "--mode", "gate"]) == 0
+
+    summary = pd.read_csv(tmp_path / "outputs" / "controlled_gate" / "controlled_run_summary.csv")
+    row = summary.loc[summary["config_name"] == "core_overlay_tqqq_gate"].iloc[0]
+    assert row["output_dir"] == "outputs\\controlled_gate\\core_overlay_tqqq_gate" or row["output_dir"] == "outputs/controlled_gate/core_overlay_tqqq_gate"
+    assert row["final_equity_ratio"] == 1.1
+    assert 9.9 not in set(summary["final_equity_ratio"])
+    assert set(summary["output_contract_status"]) == {"pass"}
+    report = (tmp_path / "outputs" / "controlled_gate" / "controlled_run_report.md").read_text(encoding="utf-8")
+    assert "Controlled gate mode, not full research validation" in report

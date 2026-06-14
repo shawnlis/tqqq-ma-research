@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 
 from .data import load_prices
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
-from .experiments import dry_run_experiment_config, run_batch_config, run_experiment_config
+from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
     compare_to_benchmark,
@@ -34,7 +34,7 @@ from .validation import (
 from .audit import audit_baseline_data, audit_config, audit_data
 from .candidates import extract_final_candidates
 from .comparison import compare_run_files
-from .controlled_runs import summarize_controlled_runs
+from .controlled_runs import GATE_CONTROLLED_RUNS, summarize_controlled_runs
 from .data_snapshot import freeze_data_snapshot, verify_data_snapshot
 from .open_questions import run_open_questions_config
 from .replay import replay_regime_windows
@@ -583,8 +583,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Summarize controlled real-data runs and classify raw TQQQ outperformance.",
     )
     controlled_runs.add_argument(
+        "--mode",
+        choices=("full", "gate"),
+        default="full",
+        help="Summary mode: full controlled configs or bounded gate configs.",
+    )
+    controlled_runs.add_argument(
         "--output-dir",
-        default="outputs/controlled_runs",
+        default=None,
         help="Directory for controlled_run_summary.csv and controlled_run_report.md.",
     )
 
@@ -734,7 +740,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.dry_run:
             dry_run_experiment_config(Path(args.config_path), objective_override=objective)
         else:
-            run_experiment_config(Path(args.config_path), objective_override=objective)
+            try:
+                run_experiment_config(Path(args.config_path), objective_override=objective)
+            except ExperimentInfrastructureError as exc:
+                print(f"ERROR: {exc.classification}: {exc}", file=sys.stderr)
+                return 1
         return 0
     if command == "run-batch":
         run_batch_config(
@@ -804,7 +814,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0 if passed else 1
     if command == "summarize-controlled-runs":
-        summarize_controlled_runs(output_dir=Path(args.output_dir))
+        output_dir = Path(
+            args.output_dir
+            if args.output_dir
+            else ("outputs/controlled_gate" if args.mode == "gate" else "outputs/controlled_runs")
+        )
+        if args.mode == "gate":
+            summarize_controlled_runs(output_dir=output_dir, run_specs=GATE_CONTROLLED_RUNS, mode=args.mode)
+        else:
+            summarize_controlled_runs(output_dir=output_dir, mode=args.mode)
         return 0
     if command == "replay-regime-windows":
         summary = replay_regime_windows(

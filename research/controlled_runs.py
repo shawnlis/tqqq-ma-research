@@ -87,6 +87,36 @@ DEFAULT_CONTROLLED_RUNS: Tuple[ControlledRunSpec, ...] = (
 )
 
 
+GATE_CONTROLLED_RUNS: Tuple[ControlledRunSpec, ...] = (
+    ControlledRunSpec(
+        strategy_config="run-existing-regime",
+        output_dir=Path("ma_search_output_v11"),
+        yearly_filenames=("same_period_yearly_returns.csv", "yearly_returns.csv"),
+        stitched_filenames=("regime_walk_forward_stitched_equity.csv", "stitched_equity.csv"),
+    ),
+    ControlledRunSpec(
+        strategy_config="configs/regime_tqqq.yaml",
+        config_path=Path("configs/regime_tqqq.yaml"),
+        output_dir=Path("outputs/regime_tqqq"),
+    ),
+    ControlledRunSpec(
+        strategy_config="configs/core_overlay_tqqq_gate.yaml",
+        config_path=Path("configs/core_overlay_tqqq_gate.yaml"),
+        output_dir=Path("outputs/controlled_gate/core_overlay_tqqq_gate"),
+    ),
+    ControlledRunSpec(
+        strategy_config="configs/core_overlay_with_rebound_gate.yaml",
+        config_path=Path("configs/core_overlay_with_rebound_gate.yaml"),
+        output_dir=Path("outputs/controlled_gate/core_overlay_with_rebound_gate"),
+    ),
+    ControlledRunSpec(
+        strategy_config="configs/vol_target_tqqq_gate.yaml",
+        config_path=Path("configs/vol_target_tqqq_gate.yaml"),
+        output_dir=Path("outputs/controlled_gate/vol_target_tqqq_gate"),
+    ),
+)
+
+
 def _as_float(value: Any) -> float:
     try:
         return float(value)
@@ -420,7 +450,7 @@ def _summarize_one(spec: ControlledRunSpec) -> Dict[str, Any]:
     }
 
 
-def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
+def _write_report(summary: pd.DataFrame, output_dir: Path, *, mode: str = "full") -> Path:
     report_path = output_dir / "controlled_run_report.md"
     candidates = summary[summary["classification"].eq("candidate for tournament_gate validation")]
     failures = summary[summary["classification"].eq("infrastructure failure")]
@@ -429,6 +459,12 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> Path:
 
     lines = [
         "# Controlled Real-Data Run Summary",
+        "",
+        (
+            "**Mode:** Controlled gate mode, not full research validation."
+            if mode == "gate"
+            else "**Mode:** Full controlled summary."
+        ),
         "",
         "## Objective",
         "Summarize controlled real-data strategy runs and identify whether any cleared the first raw wealth gate versus same-period TQQQ.",
@@ -547,13 +583,14 @@ def summarize_controlled_runs(
     *,
     output_dir: Path = Path("outputs/controlled_runs"),
     run_specs: Iterable[ControlledRunSpec] = DEFAULT_CONTROLLED_RUNS,
+    mode: str = "full",
 ) -> pd.DataFrame:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = [_summarize_one(spec) for spec in run_specs]
     summary = pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
     summary.to_csv(output_dir / "controlled_run_summary.csv", index=False)
-    _write_report(summary, output_dir)
+    _write_report(summary, output_dir, mode=mode)
     print(summary.to_string(index=False))
     print(f"\nControlled run summary written to: {output_dir / 'controlled_run_summary.csv'}")
     print(f"Controlled run report written to: {output_dir / 'controlled_run_report.md'}")

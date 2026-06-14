@@ -381,10 +381,9 @@ def _candidate_rows(output_dir: Path) -> pd.DataFrame:
     return summary[category.isin(VOLTARGET_CATEGORIES) & (status == "ok")].copy()
 
 
-def build_stage2_fair_leverage_summary(output_dir: Path) -> pd.DataFrame:
-    output_dir = Path(output_dir)
+def build_fair_leverage_summary_for_candidates(candidates: pd.DataFrame) -> pd.DataFrame:
     rows: list[Dict[str, Any]] = []
-    for _, candidate in _candidate_rows(output_dir).iterrows():
+    for _, candidate in candidates.iterrows():
         candidate_dir = Path(str(candidate.get("baseline_output_dir", "")))
         stitched = _load_stitched(candidate_dir)
         wf_table = _read_csv(candidate_dir / "walk_forward_windows.csv")
@@ -467,6 +466,11 @@ def build_stage2_fair_leverage_summary(output_dir: Path) -> pd.DataFrame:
         rows.append(row)
 
     return pd.DataFrame(rows, columns=FAIR_LEVERAGE_COLUMNS)
+
+
+def build_stage2_fair_leverage_summary(output_dir: Path) -> pd.DataFrame:
+    output_dir = Path(output_dir)
+    return build_fair_leverage_summary_for_candidates(_candidate_rows(output_dir))
 
 
 def _answer_from_row(row: Optional[pd.Series], column: str, threshold: float = 1.0) -> str:

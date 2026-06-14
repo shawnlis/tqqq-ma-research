@@ -27,6 +27,7 @@ from .yearly_contribution import (
     markdown_one_year_contribution_table,
 )
 from .voltarget_stage2 import write_voltarget_stage2_sensitivity_outputs
+from .voltarget_stage3 import write_voltarget_stage3_outputs
 
 
 DEFAULT_WALK_FORWARD_VARIANTS = (
@@ -1136,6 +1137,14 @@ def run_tournament_config(
         tournament_config.get("report_type", "")
     ) == "voltarget_stage2_2022_sensitivity":
         write_voltarget_stage2_sensitivity_outputs(
+            output_dir=output_dir,
+            summary=summary,
+            variants=variant_results,
+        )
+    if bool(tournament_config.get("voltarget_stage3_report", False)) or str(
+        tournament_config.get("report_type", "")
+    ) == "voltarget_stage3_robust_alpha":
+        write_voltarget_stage3_outputs(
             output_dir=output_dir,
             summary=summary,
             variants=variant_results,

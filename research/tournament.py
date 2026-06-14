@@ -157,6 +157,8 @@ def _write_variant_success_artifacts(
     config_path_label: str,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_error in ("error_summary.csv", "error_report.md"):
+        (output_dir / stale_error).unlink(missing_ok=True)
     stitched.to_csv(output_dir / "stitched_equity.csv")
     wf_table.to_csv(output_dir / "walk_forward_windows.csv", index=False)
     summary.to_csv(output_dir / "same_period_benchmark_summary.csv", index=False)
@@ -186,6 +188,15 @@ def _write_variant_error_artifacts(
     row: Dict[str, Any],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_success in (
+        "stitched_equity.csv",
+        "walk_forward_windows.csv",
+        "same_period_benchmark_summary.csv",
+        "yearly_returns.csv",
+        "run_config.json",
+        "report.md",
+    ):
+        (output_dir / stale_success).unlink(missing_ok=True)
     pd.DataFrame([row]).to_csv(output_dir / "error_summary.csv", index=False)
     lines = [
         f"# Tournament Variant Error: {row.get('experiment_name', output_dir.parent.name)}",

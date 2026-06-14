@@ -53,6 +53,7 @@ from .validation import (
     walk_forward_regime_search,
     walk_forward_rotation_search,
     walk_forward_search,
+    walk_forward_search_ensemble,
     walk_forward_vol_target_search,
     walk_forward_windows,
 )

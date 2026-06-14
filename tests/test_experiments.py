@@ -166,6 +166,35 @@ def test_run_config_minimal_synthetic_dataset(tmp_path: Path) -> None:
     }
 
 
+def test_run_config_ma_ensemble_produces_required_outputs(tmp_path: Path) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config = _experiment_config(tmp_path, "ma_ensemble_fixture", "ma_ensemble_fixture")
+    config["use_ensemble_wf"] = True
+    config["ensemble_top_k"] = 1
+    config["ensemble_weight_power"] = 2.0
+    config["anti_overfit_validation"] = {"enabled": False}
+    config_path = tmp_path / "ma_ensemble.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    assert main(["run-config", str(config_path)]) == 0
+
+    output_dir = tmp_path / "ma_ensemble_fixture"
+    for filename in [
+        "stitched_equity.csv",
+        "walk_forward_windows.csv",
+        "same_period_benchmark_summary.csv",
+        "yearly_returns.csv",
+        "run_config.json",
+        "report.md",
+    ]:
+        assert (output_dir / filename).exists(), filename
+
+    stitched = pd.read_csv(output_dir / "stitched_equity.csv")
+    benchmark = pd.read_csv(output_dir / "same_period_benchmark_summary.csv")
+    assert not stitched.empty
+    assert benchmark.loc[0, "benchmark_symbol"] == "TQQQ"
+
+
 @pytest.mark.parametrize(
     "config_name",
     [

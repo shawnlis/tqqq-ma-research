@@ -42,6 +42,9 @@ def _ma_config(tmp_path: Path, name: str) -> dict:
         "train_years": 5,
         "test_years": 1,
         "objective": "final_equity_ratio",
+        "use_ensemble_wf": True,
+        "ensemble_top_k": 1,
+        "ensemble_weight_power": 2.0,
         "output_dir": str(tmp_path / name),
         "data_csv": str(tmp_path / "prices.csv"),
     }
@@ -72,6 +75,15 @@ def test_run_tournament_records_rankings_and_failures(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+    stale_success_dir = tmp_path / "good" / "standard_5y_1y__10bps"
+    stale_success_dir.mkdir(parents=True)
+    (stale_success_dir / "error_summary.csv").write_text("stale", encoding="utf-8")
+    (stale_success_dir / "error_report.md").write_text("stale", encoding="utf-8")
+    stale_error_dir = tmp_path / "bad" / "standard_5y_1y__10bps"
+    stale_error_dir.mkdir(parents=True)
+    (stale_error_dir / "stitched_equity.csv").write_text("stale", encoding="utf-8")
+    (stale_error_dir / "same_period_benchmark_summary.csv").write_text("stale", encoding="utf-8")
 
     assert main(["run-tournament", str(tournament_path)]) == 0
 
@@ -112,10 +124,14 @@ def test_run_tournament_records_rankings_and_failures(tmp_path: Path) -> None:
         "report.md",
     ]:
         assert (ok_output_dir / filename).exists(), filename
+    assert not (ok_output_dir / "error_summary.csv").exists()
+    assert not (ok_output_dir / "error_report.md").exists()
     failed_variant = variants[(variants["family"] == "Bad Strategy") & (variants["status"] != "ok")].iloc[0]
     failed_output_dir = Path(failed_variant["output_dir"])
     assert (failed_output_dir / "error_summary.csv").exists()
     assert (failed_output_dir / "error_report.md").exists()
+    assert not (failed_output_dir / "stitched_equity.csv").exists()
+    assert not (failed_output_dir / "same_period_benchmark_summary.csv").exists()
 
     summary = pd.read_csv(output_dir / "tournament_summary.csv")
     assert set(summary["family"]) == {"Good MA", "Bad Strategy"}

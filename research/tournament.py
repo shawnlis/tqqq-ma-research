@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -111,6 +112,95 @@ def _variant_name(wf_variant: Dict[str, Any], cost_bps: float) -> str:
     return f"{wf_variant['name']}__{float(cost_bps):g}bps"
 
 
+def _safe_path_part(value: Any) -> str:
+    text = str(value).strip()
+    text = re.sub(r"[^A-Za-z0-9_.=-]+", "_", text)
+    return text.strip("_") or "variant"
+
+
+def _variant_output_dir(base_config: Dict[str, Any], variant_name: str) -> Path:
+    return Path(str(base_config.get("output_dir", "outputs/tournament/experiments/strategy"))) / _safe_path_part(variant_name)
+
+
+def _write_variant_report(
+    *,
+    output_dir: Path,
+    row: Dict[str, Any],
+) -> None:
+    lines = [
+        f"# Tournament Variant Report: {row.get('experiment_name', output_dir.parent.name)}",
+        "",
+        "This report is a bounded tournament-gate artifact. It is not a final research conclusion or investment recommendation.",
+        "",
+        f"- Family: `{row.get('family', '')}`",
+        f"- Variant: `{row.get('variant', '')}`",
+        f"- Benchmark: `{row.get('tournament_benchmark_symbol', '')}`",
+        f"- Status: `{row.get('status', '')}`",
+        f"- Final equity ratio: `{row.get('final_equity_ratio', '')}`",
+        f"- Excess CAGR: `{row.get('excess_cagr', '')}`",
+        f"- Strategy max drawdown: `{row.get('strategy_max_dd', '')}`",
+        f"- Output directory: `{output_dir}`",
+        "",
+    ]
+    (output_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_variant_success_artifacts(
+    *,
+    output_dir: Path,
+    base_config: Dict[str, Any],
+    row: Dict[str, Any],
+    wf_table: pd.DataFrame,
+    stitched: pd.DataFrame,
+    summary: pd.DataFrame,
+    yearly: pd.DataFrame,
+    config_path_label: str,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stitched.to_csv(output_dir / "stitched_equity.csv")
+    wf_table.to_csv(output_dir / "walk_forward_windows.csv", index=False)
+    summary.to_csv(output_dir / "same_period_benchmark_summary.csv", index=False)
+    yearly.to_csv(output_dir / "yearly_returns.csv", index=False)
+    (output_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "command": "run-tournament",
+                "config_path": config_path_label,
+                "variant": row.get("variant", ""),
+                "family": row.get("family", ""),
+                "category": row.get("category", ""),
+                "tournament_benchmark_symbol": row.get("tournament_benchmark_symbol", ""),
+                **base_config,
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    _write_variant_report(output_dir=output_dir, row=row)
+
+
+def _write_variant_error_artifacts(
+    *,
+    output_dir: Path,
+    row: Dict[str, Any],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([row]).to_csv(output_dir / "error_summary.csv", index=False)
+    lines = [
+        f"# Tournament Variant Error: {row.get('experiment_name', output_dir.parent.name)}",
+        "",
+        "This variant failed during the bounded tournament gate.",
+        "",
+        f"- Family: `{row.get('family', '')}`",
+        f"- Variant: `{row.get('variant', '')}`",
+        f"- Status: `{row.get('status', '')}`",
+        f"- Error: `{row.get('error', '')}`",
+        "",
+    ]
+    (output_dir / "error_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def _load_entry_config(tournament_path: Path, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     if "config" in entry:
         config_path = _resolve_config_path(tournament_path, entry["config"])
@@ -144,6 +234,7 @@ def _run_tournament_variant(
     variant_config["transaction_cost_bps"] = float(cost_bps)
     variant_config["anti_overfit_validation"] = {"enabled": False}
     variant_name = _variant_name(wf_variant, cost_bps)
+    variant_output_dir = _variant_output_dir(base_config, variant_name)
     estimate = estimate_experiment_workload(
         variant_config,
         include_full_experiment_overhead=False,
@@ -166,6 +257,7 @@ def _run_tournament_variant(
         "transaction_cost_bps": float(cost_bps),
         "status": "error",
         "error": "",
+        "output_dir": str(variant_output_dir),
         **estimate,
     }
 
@@ -185,9 +277,10 @@ def _run_tournament_variant(
         if stitched.empty:
             row["status"] = "no_result"
             row["error"] = "variant produced no stitched equity"
+            _write_variant_error_artifacts(output_dir=variant_output_dir, row=row)
             return row
 
-        summary, _ = compare_to_benchmark(
+        summary, yearly = compare_to_benchmark(
             stitched,
             data,
             benchmark_symbol=tournament_benchmark_symbol,
@@ -196,11 +289,22 @@ def _run_tournament_variant(
         row.update(metrics)
         row["status"] = "ok"
         row["error"] = ""
+        _write_variant_success_artifacts(
+            output_dir=variant_output_dir,
+            base_config=variant_config,
+            row=row,
+            wf_table=wf_table,
+            stitched=stitched,
+            summary=summary,
+            yearly=yearly,
+            config_path_label=config_path_label,
+        )
         return row
     except Exception as exc:
         actual_runtime_seconds = time.perf_counter() - started
         row["actual_runtime_seconds"] = float(actual_runtime_seconds)
         row["error"] = str(exc)
+        _write_variant_error_artifacts(output_dir=variant_output_dir, row=row)
         return row
 
 

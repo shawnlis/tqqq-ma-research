@@ -101,6 +101,21 @@ def test_run_tournament_records_rankings_and_failures(tmp_path: Path) -> None:
     variants = pd.read_csv(output_dir / "tournament_variant_results.csv")
     assert len(variants[variants["family"] == "Good MA"]) == 9
     assert len(variants[variants["family"] == "Bad Strategy"]) == 9
+    ok_variant = variants[(variants["family"] == "Good MA") & (variants["status"] == "ok")].iloc[0]
+    ok_output_dir = Path(ok_variant["output_dir"])
+    for filename in [
+        "stitched_equity.csv",
+        "walk_forward_windows.csv",
+        "same_period_benchmark_summary.csv",
+        "yearly_returns.csv",
+        "run_config.json",
+        "report.md",
+    ]:
+        assert (ok_output_dir / filename).exists(), filename
+    failed_variant = variants[(variants["family"] == "Bad Strategy") & (variants["status"] != "ok")].iloc[0]
+    failed_output_dir = Path(failed_variant["output_dir"])
+    assert (failed_output_dir / "error_summary.csv").exists()
+    assert (failed_output_dir / "error_report.md").exists()
 
     summary = pd.read_csv(output_dir / "tournament_summary.csv")
     assert set(summary["family"]) == {"Good MA", "Bad Strategy"}

@@ -42,6 +42,7 @@ from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
+from .voltarget_fair_leverage import write_stage2_fair_leverage_outputs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -522,6 +523,11 @@ def build_parser() -> argparse.ArgumentParser:
         "output_dir",
         help="Tournament stage output directory containing tournament_summary.csv.",
     )
+    summarize_voltarget_stage_parser.add_argument(
+        "--fair-leverage",
+        action="store_true",
+        help="Also write Stage 2 fair leverage benchmark summary/report from completed VolTarget outputs.",
+    )
 
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
@@ -798,6 +804,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command == "summarize-voltarget-stage":
         try:
             summarize_voltarget_stage(Path(args.output_dir))
+            if bool(getattr(args, "fair_leverage", False)):
+                write_stage2_fair_leverage_outputs(Path(args.output_dir))
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 from .data import load_prices
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
+from .final_voltarget_audit import run_final_voltarget_audit
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
     compare_to_benchmark,
@@ -545,6 +546,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for visualization PNGs, summary CSV, and report.",
     )
 
+    audit_final_voltarget = subparsers.add_parser(
+        "audit-final-voltarget",
+        help="Build the final audit pack for the selected Stage 3 VolTarget candidate.",
+    )
+    audit_final_voltarget.add_argument(
+        "--input-dir",
+        required=True,
+        help="Stage 3 tournament output directory containing final VolTarget artifacts.",
+    )
+    audit_final_voltarget.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for final VolTarget audit CSV, Markdown, and chart outputs.",
+    )
+
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -835,6 +851,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Wrote visualization summary: {result.summary_path}")
             print(f"Wrote visualization report: {result.report_path}")
             for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "audit-final-voltarget":
+        try:
+            result = run_final_voltarget_audit(
+                input_dir=Path(args.input_dir),
+                output_dir=Path(args.output_dir),
+            )
+            print(f"Wrote final VolTarget audit to: {result.output_dir}")
+            print(f"Final classification: {result.final_classification}")
+            for name, path in result.artifact_paths.items():
                 print(f"Wrote {name}: {path}")
             return 0
         except (FileNotFoundError, ValueError) as exc:

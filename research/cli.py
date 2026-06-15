@@ -40,6 +40,7 @@ from .open_questions import run_open_questions_config
 from .replay import replay_regime_windows
 from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
+from .visualization import generate_equity_visualizations
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
 from .voltarget_fair_leverage import write_stage2_fair_leverage_outputs
@@ -529,6 +530,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also write Stage 2 fair leverage benchmark summary/report from completed VolTarget outputs.",
     )
 
+    plot_equity_curve = subparsers.add_parser(
+        "plot-equity-curve",
+        help="Generate equity-curve visualizations for the selected Stage 3 VolTarget candidate.",
+    )
+    plot_equity_curve.add_argument(
+        "--input-dir",
+        required=True,
+        help="Stage 3 tournament output directory containing candidate decision artifacts.",
+    )
+    plot_equity_curve.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for visualization PNGs, summary CSV, and report.",
+    )
+
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -806,6 +822,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             summarize_voltarget_stage(Path(args.output_dir))
             if bool(getattr(args, "fair_leverage", False)):
                 write_stage2_fair_leverage_outputs(Path(args.output_dir))
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "plot-equity-curve":
+        try:
+            result = generate_equity_visualizations(
+                input_dir=Path(args.input_dir),
+                output_dir=Path(args.output_dir),
+            )
+            print(f"Wrote visualization summary: {result.summary_path}")
+            print(f"Wrote visualization report: {result.report_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

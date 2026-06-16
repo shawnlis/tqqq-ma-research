@@ -41,6 +41,8 @@ class VolTargetSignalResult:
     signal_history_path: Path
     signal_report_path: Path
     data_quality_path: Path
+    financing_history_path: Path
+    financing_report_path: Path
     chart_paths: Dict[str, Path]
     signal_today: Dict[str, Any]
 
@@ -58,7 +60,12 @@ def load_monitor_config(config_path: Path) -> Dict[str, Any]:
     config["execution_assumption"] = normalize_execution_model(config.get("execution_assumption", NEXT_OPEN_TO_NEXT_OPEN))
     config["transaction_cost_bps"] = float(config["transaction_cost_bps"])
     config["slippage_bps"] = float(config.get("slippage_bps", 0.0))
-    config["financing_annual_cost"] = float(config["financing_annual_cost"])
+    config["annual_financing_rate_assumption"] = float(
+        config.get("annual_financing_rate_assumption", config["financing_annual_cost"])
+    )
+    config["financing_annual_cost"] = float(config["annual_financing_rate_assumption"])
+    config["financing_applies_above_exposure"] = float(config.get("financing_applies_above_exposure", 1.0))
+    config["financing_day_count_basis"] = int(config.get("financing_day_count_basis", 252))
     config["stale_data_warning_days"] = int(config["stale_data_warning_days"])
     config["target_symbol"] = str(config["target_symbol"]).upper()
     config["benchmark_symbol"] = str(config["benchmark_symbol"]).upper()
@@ -110,10 +117,112 @@ def build_monitor_frame(config: Dict[str, Any], *, data_csv: Optional[Path] = No
     adjusted["relative_equity_vs_tqqq"] = adjusted["equity"].astype(float) / tqqq_equity
     adjusted["trade_delta"] = adjusted["target_exposure"].astype(float) - adjusted["position"].astype(float)
     adjusted["estimated_transaction_cost"] = adjusted["trade_delta"].abs() * (float(config["transaction_cost_bps"]) / 10000.0)
-    adjusted["estimated_financing_cost"] = (adjusted["target_exposure"].astype(float) - 1.0).clip(lower=0.0) * (
-        float(config["financing_annual_cost"]) / 252.0
+    adjusted["estimated_financing_cost"] = (
+        adjusted["target_exposure"].astype(float) - float(config["financing_applies_above_exposure"])
+    ).clip(lower=0.0) * (
+        float(config["annual_financing_rate_assumption"]) / float(config["financing_day_count_basis"])
     )
     return adjusted
+
+
+def build_financing_cost_history(config: Dict[str, Any], frame: pd.DataFrame) -> pd.DataFrame:
+    exposure = frame["position"].astype(float)
+    threshold = float(config["financing_applies_above_exposure"])
+    annual_rate = float(config["annual_financing_rate_assumption"])
+    day_count = float(config["financing_day_count_basis"])
+    excess_exposure = (exposure - threshold).clip(lower=0.0)
+    daily_financing_cost = excess_exposure * (annual_rate / day_count)
+    ret_after_financing = frame["ret"].astype(float).fillna(0.0)
+    ret_before_financing = ret_after_financing + daily_financing_cost
+    equity_before = (1.0 + ret_before_financing).cumprod()
+    equity_after = (1.0 + ret_after_financing).cumprod()
+    return pd.DataFrame(
+        {
+            "date": [pd.Timestamp(idx).date().isoformat() for idx in frame.index],
+            "exposure": exposure.to_numpy(),
+            "excess_exposure": excess_exposure.to_numpy(),
+            "annual_financing_rate_assumption": annual_rate,
+            "financing_applies_above_exposure": threshold,
+            "financing_day_count_basis": int(day_count),
+            "daily_financing_cost": daily_financing_cost.to_numpy(),
+            "cumulative_financing_cost": daily_financing_cost.cumsum().to_numpy(),
+            "strategy_equity_before_financing": equity_before.to_numpy(),
+            "strategy_equity_after_financing": equity_after.to_numpy(),
+            "equity_impact": (equity_after - equity_before).to_numpy(),
+            "equity_impact_pct": (equity_after / equity_before - 1.0).replace([np.inf, -np.inf], np.nan).to_numpy(),
+        }
+    )
+
+
+def _financing_sensitivity(config: Dict[str, Any], frame: pd.DataFrame, rates: tuple[float, ...] = (0.03, 0.06, 0.09, 0.12)) -> pd.DataFrame:
+    rows = []
+    exposure = frame["position"].astype(float)
+    threshold = float(config["financing_applies_above_exposure"])
+    day_count = float(config["financing_day_count_basis"])
+    excess_exposure = (exposure - threshold).clip(lower=0.0)
+    baseline_history = build_financing_cost_history(config, frame)
+    baseline_daily_cost = pd.Series(
+        baseline_history["daily_financing_cost"].astype(float).to_numpy(),
+        index=frame.index,
+    )
+    ret_before_financing = frame["ret"].astype(float).fillna(0.0) + baseline_daily_cost
+    equity_before = (1.0 + ret_before_financing).cumprod()
+    for rate in rates:
+        scenario_daily_cost = excess_exposure * (float(rate) / day_count)
+        equity_after = (1.0 + ret_before_financing - scenario_daily_cost).cumprod()
+        rows.append(
+            {
+                "annual_financing_rate_assumption": float(rate),
+                "cumulative_financing_cost": float(scenario_daily_cost.cumsum().iloc[-1]) if len(scenario_daily_cost) else 0.0,
+                "final_equity_before_financing": float(equity_before.iloc[-1]) if len(equity_before) else np.nan,
+                "final_equity_after_financing": float(equity_after.iloc[-1]) if len(equity_after) else np.nan,
+                "final_equity_impact": float(equity_after.iloc[-1] - equity_before.iloc[-1]) if len(equity_after) else np.nan,
+                "final_equity_impact_pct": float(equity_after.iloc[-1] / equity_before.iloc[-1] - 1.0) if len(equity_after) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _write_financing_report(path: Path, config: Dict[str, Any], history: pd.DataFrame, sensitivity: pd.DataFrame) -> None:
+    exposure_days = int((history["exposure"].astype(float) > 1.0).sum()) if not history.empty else 0
+    average_excess = float(history["excess_exposure"].astype(float).mean()) if not history.empty else 0.0
+    cumulative_drag = float(history["cumulative_financing_cost"].iloc[-1]) if not history.empty else 0.0
+    final_before = float(history["strategy_equity_before_financing"].iloc[-1]) if not history.empty else np.nan
+    final_after = float(history["strategy_equity_after_financing"].iloc[-1]) if not history.empty else np.nan
+    final_impact = final_after - final_before if not np.isnan(final_before) and not np.isnan(final_after) else np.nan
+    final_impact_pct = final_after / final_before - 1.0 if final_before and not np.isnan(final_before) else np.nan
+    sensitivity_table = sensitivity.to_string(index=False)
+    lines = [
+        "# VolTarget Paper Financing Cost Report",
+        "",
+        "**paper trading only**",
+        "",
+        "This report tracks financing-cost assumptions for the paper monitor. It does not change strategy logic, place trades, or call broker APIs.",
+        "",
+        "## Assumptions",
+        f"- Annual financing rate assumption: `{config['annual_financing_rate_assumption']}`",
+        f"- Financing applies above exposure: `{config['financing_applies_above_exposure']}`",
+        f"- Financing day-count basis: `{config['financing_day_count_basis']}`",
+        "",
+        "## Summary",
+        f"- Days exposure > 1.0: `{exposure_days}`",
+        f"- Average excess exposure: `{average_excess}`",
+        f"- Cumulative financing drag: `{cumulative_drag}`",
+        f"- Final equity before financing: `{final_before}`",
+        f"- Final equity after financing: `{final_after}`",
+        f"- Final equity impact: `{final_impact}`",
+        f"- Final equity impact pct: `{final_impact_pct}`",
+        "",
+        "## Sensitivity",
+        "```text",
+        sensitivity_table,
+        "```",
+        "",
+        "## Boundary",
+        "Financing-cost tracking is an audit layer for paper monitoring only. It is not production-ready and is not an investment recommendation.",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _data_quality(config: Dict[str, Any], frame: pd.DataFrame, as_of_date: Optional[pd.Timestamp]) -> pd.DataFrame:
@@ -322,10 +431,16 @@ def generate_voltarget_signal(
     signal_history_path = output_dir / "signal_history.csv"
     signal_report_path = output_dir / "signal_report.md"
     data_quality_path = output_dir / "data_quality_report.csv"
+    financing_history_path = output_dir / "financing_cost_history.csv"
+    financing_report_path = output_dir / "financing_cost_report.md"
     signal_today_path.write_text(json.dumps(signal, indent=2, sort_keys=True), encoding="utf-8")
     history = _merge_history(signal_history_path, _history_rows(config, frame))
     history.to_csv(signal_history_path, index=False)
     quality.to_csv(data_quality_path, index=False)
+    financing_history = build_financing_cost_history(config, frame)
+    financing_history.to_csv(financing_history_path, index=False)
+    financing_sensitivity = _financing_sensitivity(config, frame)
+    _write_financing_report(financing_report_path, config, financing_history, financing_sensitivity)
     chart_paths = {
         "paper_equity_curve": _write_chart(frame, output_dir, "paper_equity_curve.png", ["equity", "tqqq_paper_equity"], "Paper Equity Curve", "Equity"),
         "relative_equity_vs_tqqq": _write_chart(frame, output_dir, "relative_equity_vs_tqqq.png", ["relative_equity_vs_tqqq"], "Relative Equity vs TQQQ", "Relative equity"),
@@ -338,6 +453,8 @@ def generate_voltarget_signal(
         signal_history_path=signal_history_path,
         signal_report_path=signal_report_path,
         data_quality_path=data_quality_path,
+        financing_history_path=financing_history_path,
+        financing_report_path=financing_report_path,
         chart_paths=chart_paths,
         signal_today=signal,
     )

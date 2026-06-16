@@ -4,6 +4,9 @@ execution_assumption: next_open_to_next_open
 transaction_cost_bps: 10.0
 slippage_bps: 0.0
 financing_annual_cost: 0.06
+annual_financing_rate_assumption: 0.06
+financing_applies_above_exposure: 1.0
+financing_day_count_basis: 252
 stale_data_warning_days: 5
 target_symbol: TQQQ
 benchmark_symbol: TQQQ

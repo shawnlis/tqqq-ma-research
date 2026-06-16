@@ -7,7 +7,12 @@ import pandas as pd
 import pytest
 import yaml
 
-from research.voltarget_live_monitor import generate_voltarget_signal
+from research.voltarget_live_monitor import (
+    _financing_sensitivity,
+    build_financing_cost_history,
+    generate_voltarget_signal,
+    load_monitor_config,
+)
 
 
 def _write_fixture(tmp_path: Path, *, future_multiplier: float = 1.0) -> tuple[Path, Path, Path]:
@@ -110,6 +115,9 @@ def _write_fixture(tmp_path: Path, *, future_multiplier: float = 1.0) -> tuple[P
                 "transaction_cost_bps": 10.0,
                 "slippage_bps": 0.0,
                 "financing_annual_cost": 0.06,
+                "annual_financing_rate_assumption": 0.06,
+                "financing_applies_above_exposure": 1.0,
+                "financing_day_count_basis": 252,
                 "stale_data_warning_days": 5,
                 "target_symbol": "TQQQ",
                 "benchmark_symbol": "TQQQ",
@@ -198,3 +206,82 @@ def test_paper_equity_uses_execution_assumption_selected_in_config(tmp_path: Pat
     assert (tmp_path / "out" / "paper_equity_curve.png").exists()
     assert (tmp_path / "out" / "relative_equity_vs_tqqq.png").exists()
     assert (tmp_path / "out" / "exposure_history.png").exists()
+
+
+def test_financing_cost_history_uses_excess_exposure_and_day_count() -> None:
+    config = {
+        "annual_financing_rate_assumption": 0.252,
+        "financing_applies_above_exposure": 1.0,
+        "financing_day_count_basis": 252,
+    }
+    frame = pd.DataFrame(
+        {
+            "position": [0.8, 1.0, 1.5, 2.0],
+            "ret": [0.01, 0.01, 0.01 - 0.0005, 0.01 - 0.001],
+        },
+        index=pd.date_range("2026-01-01", periods=4, freq="B"),
+    )
+
+    history = build_financing_cost_history(config, frame)
+
+    assert history["excess_exposure"].tolist() == pytest.approx([0.0, 0.0, 0.5, 1.0])
+    assert history["daily_financing_cost"].tolist() == pytest.approx([0.0, 0.0, 0.0005, 0.001])
+    assert history["cumulative_financing_cost"].tolist() == pytest.approx([0.0, 0.0, 0.0005, 0.0015])
+    assert history["strategy_equity_before_financing"].iloc[-1] > history["strategy_equity_after_financing"].iloc[-1]
+
+
+def test_financing_sensitivity_uses_same_before_financing_baseline() -> None:
+    config = {
+        "annual_financing_rate_assumption": 0.06,
+        "financing_applies_above_exposure": 1.0,
+        "financing_day_count_basis": 252,
+    }
+    frame = pd.DataFrame(
+        {
+            "position": [1.5, 2.0],
+            "ret": [0.01 - (0.5 * 0.06 / 252), 0.02 - (1.0 * 0.06 / 252)],
+        },
+        index=pd.date_range("2026-01-01", periods=2, freq="B"),
+    )
+
+    sensitivity = _financing_sensitivity(config, frame, rates=(0.03, 0.06, 0.09, 0.12))
+
+    assert sensitivity["final_equity_before_financing"].nunique() == 1
+    assert sensitivity["final_equity_after_financing"].is_monotonic_decreasing
+
+
+def test_generate_signal_writes_financing_cost_outputs(tmp_path: Path) -> None:
+    config_path, data_csv, _ = _write_fixture(tmp_path)
+
+    result = generate_voltarget_signal(config_path=config_path, output_dir=tmp_path / "out", data_csv=data_csv)
+
+    assert result.financing_history_path.exists()
+    assert result.financing_report_path.exists()
+    history = pd.read_csv(result.financing_history_path)
+    for column in [
+        "exposure",
+        "excess_exposure",
+        "daily_financing_cost",
+        "cumulative_financing_cost",
+        "strategy_equity_before_financing",
+        "strategy_equity_after_financing",
+    ]:
+        assert column in history.columns
+    report = result.financing_report_path.read_text(encoding="utf-8")
+    assert "Days exposure > 1.0" in report
+    assert "Average excess exposure" in report
+    assert "Cumulative financing drag" in report
+    assert "0.03" in report
+    assert "0.06" in report
+    assert "0.09" in report
+    assert "0.12" in report
+
+
+def test_live_monitor_config_loads_new_financing_fields(tmp_path: Path) -> None:
+    config_path, _, _ = _write_fixture(tmp_path)
+
+    config = load_monitor_config(config_path)
+
+    assert config["annual_financing_rate_assumption"] == pytest.approx(0.06)
+    assert config["financing_applies_above_exposure"] == pytest.approx(1.0)
+    assert config["financing_day_count_basis"] == 252

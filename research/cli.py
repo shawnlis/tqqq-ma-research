@@ -1128,6 +1128,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Wrote signal history: {result.signal_history_path}")
             print(f"Wrote signal report: {result.signal_report_path}")
             print(f"Wrote data quality report: {result.data_quality_path}")
+            print(f"Wrote financing cost history: {result.financing_history_path}")
+            print(f"Wrote financing cost report: {result.financing_report_path}")
             for name, path in result.chart_paths.items():
                 print(f"Wrote {name}: {path}")
             return 0

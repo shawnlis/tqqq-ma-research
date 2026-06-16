@@ -44,6 +44,7 @@ from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
 from .visualization import generate_equity_visualizations
 from .voltarget_simplification_battle import run_simplification_battle
+from .voltarget_execution_semantics import run_execution_semantics_audit
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
@@ -588,6 +589,29 @@ def build_parser() -> argparse.ArgumentParser:
         default="./price_cache",
         help="Price cache directory used when --data-csv is not supplied.",
     )
+    execution_semantics = subparsers.add_parser(
+        "audit-voltarget-execution-semantics",
+        help="Audit VolTarget trade lifecycle, return decomposition, and valid execution semantics.",
+    )
+    execution_semantics.add_argument(
+        "--input-dir",
+        default="outputs/tournament_voltarget_stage3",
+        help="Stage 3 tournament output directory containing the selected VolTarget candidate.",
+    )
+    execution_semantics.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for execution semantics CSV, report, and chart outputs.",
+    )
+    execution_semantics.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date, close, and OHLC columns for offline replay.",
+    )
+    execution_semantics.add_argument(
+        "--cache-dir",
+        default="./price_cache",
+        help="Price cache directory used when --data-csv is not supplied.",
+    )
     simplification_battle = subparsers.add_parser(
         "compare-voltarget-simplification",
         help="Compare the locked Stage 3 VolTarget candidate against simpler alternatives without re-optimization.",
@@ -955,6 +979,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"{result.still_beats_tqqq_after_realistic_financing}"
             )
             print(f"Breaking assumption: {result.breaking_assumption}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "audit-voltarget-execution-semantics":
+        try:
+            result = run_execution_semantics_audit(
+                input_dir=Path(args.input_dir),
+                output_dir=Path(args.output_dir),
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+                cache_dir=args.cache_dir,
+            )
+            print(f"Wrote execution semantics summary: {result.summary_path}")
+            print(f"Wrote return decomposition: {result.decomposition_path}")
+            print(f"Wrote execution semantics report: {result.report_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
+            print(f"Classification: {result.classification}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

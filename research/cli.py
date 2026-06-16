@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 from .data import load_prices
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
+from .execution_drift import run_execution_drift_tracking
 from .execution_financing import run_execution_financing_audit
 from .final_voltarget_audit import run_final_voltarget_audit
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
@@ -703,6 +704,35 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Directory for paper trade reconciliation CSV and Markdown report.",
     )
+    execution_drift = subparsers.add_parser(
+        "track-execution-drift",
+        help="Track VolTarget paper-monitor execution drift against observable TQQQ OHLC prices.",
+    )
+    execution_drift.add_argument(
+        "--config",
+        default="configs/voltarget_live_monitor.yaml",
+        help="Path to voltarget_live_monitor.yaml.",
+    )
+    execution_drift.add_argument(
+        "--signal-dir",
+        default="outputs/live_signal",
+        help="Directory containing signal_history.csv from the paper monitor.",
+    )
+    execution_drift.add_argument(
+        "--output-dir",
+        default="outputs/execution_drift",
+        help="Directory for execution drift CSV, report, and charts.",
+    )
+    execution_drift.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date and adjusted OHLC columns.",
+    )
+    execution_drift.add_argument(
+        "--drift-threshold",
+        type=float,
+        default=0.01,
+        help="Absolute drift threshold used for policy-threshold warnings.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -1123,6 +1153,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Wrote paper trade reconciliation report: {result.report_path}")
             warnings = int(result.reconciliation["warnings"].fillna("").astype(str).ne("").sum()) if not result.reconciliation.empty else 0
             print(f"Rows with warnings: {warnings}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "track-execution-drift":
+        try:
+            result = run_execution_drift_tracking(
+                config_path=Path(args.config),
+                signal_dir=Path(args.signal_dir),
+                output_dir=Path(args.output_dir),
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+                drift_threshold=float(args.drift_threshold),
+            )
+            print(f"Wrote execution drift summary: {result.summary_path}")
+            print(f"Wrote execution drift report: {result.report_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
+            print(f"Drift exceeds policy threshold: {result.metrics['drift_exceeds_policy_threshold']}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

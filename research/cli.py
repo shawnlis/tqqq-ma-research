@@ -45,6 +45,7 @@ from .tournament import run_tournament_config
 from .visualization import generate_equity_visualizations
 from .voltarget_simplification_battle import run_simplification_battle
 from .voltarget_execution_semantics import run_execution_semantics_audit
+from .voltarget_live_monitor import generate_voltarget_signal
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
@@ -654,6 +655,24 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Directory for risk dashboard Markdown, CSV, and chart outputs.",
     )
+    voltarget_signal = subparsers.add_parser(
+        "generate-voltarget-signal",
+        help="Generate a paper-trading-only signal monitor report for the locked Stage 3 VolTarget candidate.",
+    )
+    voltarget_signal.add_argument(
+        "--config",
+        required=True,
+        help="Path to voltarget_live_monitor.yaml.",
+    )
+    voltarget_signal.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for signal JSON, history CSV, report, charts, and data-quality output.",
+    )
+    voltarget_signal.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date, close, and OHLC columns for offline replay.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -1032,6 +1051,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Wrote dashboard: {result.dashboard_path}")
             print(f"Wrote dashboard summary: {result.summary_path}")
             print(f"Wrote risk policy breaches: {result.breaches_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "generate-voltarget-signal":
+        try:
+            result = generate_voltarget_signal(
+                config_path=Path(args.config),
+                output_dir=Path(args.output_dir),
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+            )
+            print(f"Wrote signal JSON: {result.signal_today_path}")
+            print(f"Wrote signal history: {result.signal_history_path}")
+            print(f"Wrote signal report: {result.signal_report_path}")
+            print(f"Wrote data quality report: {result.data_quality_path}")
             for name, path in result.chart_paths.items():
                 print(f"Wrote {name}: {path}")
             return 0

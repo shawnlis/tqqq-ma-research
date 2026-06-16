@@ -1,0 +1,13 @@
+input_dir: outputs/tournament_voltarget_stage3
+cache_dir: ./price_cache
+execution_assumption: next_open_to_next_open
+transaction_cost_bps: 10.0
+slippage_bps: 0.0
+financing_annual_cost: 0.06
+stale_data_warning_days: 5
+target_symbol: TQQQ
+benchmark_symbol: TQQQ
+risk_policy_config: configs/voltarget_risk_policy.yaml
+classification: crash_control_candidate
+production_ready: false
+paper_trading_only: true

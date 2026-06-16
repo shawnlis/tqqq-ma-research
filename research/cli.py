@@ -39,6 +39,7 @@ from .comparison import compare_run_files
 from .controlled_runs import GATE_CONTROLLED_RUNS, summarize_controlled_runs
 from .data_snapshot import freeze_data_snapshot, verify_data_snapshot
 from .open_questions import run_open_questions_config
+from .paper_trade_reconciliation import reconcile_paper_trades
 from .replay import replay_regime_windows
 from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
@@ -683,6 +684,25 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to voltarget_live_monitor.yaml.",
     )
+    reconcile_paper_trades_parser = subparsers.add_parser(
+        "reconcile-paper-trades",
+        help="Reconcile manual VolTarget paper ledger rows against generated paper signals.",
+    )
+    reconcile_paper_trades_parser.add_argument(
+        "--signal-dir",
+        required=True,
+        help="Directory containing signal_history.csv from the VolTarget paper monitor.",
+    )
+    reconcile_paper_trades_parser.add_argument(
+        "--ledger",
+        required=True,
+        help="Manual CSV ledger path. Missing ledgers are treated as all signal rows missing manual entries.",
+    )
+    reconcile_paper_trades_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for paper trade reconciliation CSV and Markdown report.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -1092,6 +1112,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if result.status.get("error"):
             print(f"ERROR: {result.status['error']}", file=sys.stderr)
         return 0 if result.status["status"] in {"ok", "warning"} else 1
+    if command == "reconcile-paper-trades":
+        try:
+            result = reconcile_paper_trades(
+                signal_dir=Path(args.signal_dir),
+                ledger_path=Path(args.ledger),
+                output_dir=Path(args.output_dir),
+            )
+            print(f"Wrote paper trade reconciliation: {result.reconciliation_path}")
+            print(f"Wrote paper trade reconciliation report: {result.report_path}")
+            warnings = int(result.reconciliation["warnings"].fillna("").astype(str).ne("").sum()) if not result.reconciliation.empty else 0
+            print(f"Rows with warnings: {warnings}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     if command == "run-open-questions":
         run_open_questions_config(
             Path(args.pack_path),

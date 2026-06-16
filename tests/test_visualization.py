@@ -158,6 +158,20 @@ def test_command_writes_expected_chart_and_report_files(tmp_path: Path) -> None:
         "visualization_report.md",
     }
     assert expected_files.issubset({path.name for path in output_dir.iterdir()})
+    summary = pd.read_csv(output_dir / "visualization_summary.csv")
+    for column in [
+        "strategy_volatility",
+        "tqqq_volatility",
+        "strategy_sharpe",
+        "tqqq_sharpe",
+        "strategy_calmar",
+        "tqqq_calmar",
+    ]:
+        assert column in summary.columns
+    report = (output_dir / "visualization_report.md").read_text(encoding="utf-8")
+    assert "Strategy annualized volatility" in report
+    assert "Strategy Sharpe" in report
+    assert "Strategy Calmar ratio" in report
 
 
 def test_missing_exposure_column_is_handled_gracefully(tmp_path: Path) -> None:

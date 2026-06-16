@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .metrics import annualized_return
+from .metrics import annualized_return, annualized_volatility, calmar_ratio, sharpe_ratio
 
 
 EXPOSURE_COLUMNS = (
@@ -165,7 +165,52 @@ def _find_exposure_column(stitched: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def _save_equity_chart(curves: pd.DataFrame, output_path: Path, *, log_scale: bool, title: str) -> None:
+def _format_pct(value: float) -> str:
+    return "n/a" if np.isnan(value) else f"{value:.2%}"
+
+
+def _format_number(value: float) -> str:
+    return "n/a" if np.isnan(value) else f"{value:.2f}"
+
+
+def _metric_text(summary_row: Dict[str, object]) -> str:
+    return "\n".join(
+        [
+            "Metric                 VolTarget      TQQQ",
+            f"CAGR                  {_format_pct(float(summary_row['strategy_cagr'])):>8}  {_format_pct(float(summary_row['tqqq_cagr'])):>8}",
+            f"Vol                   {_format_pct(float(summary_row['strategy_volatility'])):>8}  {_format_pct(float(summary_row['tqqq_volatility'])):>8}",
+            f"Sharpe                {_format_number(float(summary_row['strategy_sharpe'])):>8}  {_format_number(float(summary_row['tqqq_sharpe'])):>8}",
+            f"MaxDD                 {_format_pct(float(summary_row['strategy_max_drawdown'])):>8}  {_format_pct(float(summary_row['tqqq_max_drawdown'])):>8}",
+            f"Calmar                {_format_number(float(summary_row['strategy_calmar'])):>8}  {_format_number(float(summary_row['tqqq_calmar'])):>8}",
+        ]
+    )
+
+
+def _add_metric_box(ax: plt.Axes, text: str, *, loc: str = "upper left") -> None:
+    x = 0.015
+    y = 0.985 if loc == "upper left" else 0.035
+    va = "top" if loc == "upper left" else "bottom"
+    ax.text(
+        x,
+        y,
+        text,
+        transform=ax.transAxes,
+        va=va,
+        ha="left",
+        fontsize=8,
+        family="monospace",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "#888888", "alpha": 0.86},
+    )
+
+
+def _save_equity_chart(
+    curves: pd.DataFrame,
+    output_path: Path,
+    *,
+    log_scale: bool,
+    title: str,
+    metric_text: str,
+) -> None:
     fig, ax = plt.subplots(figsize=(11, 6))
     ax.plot(curves.index, curves["strategy_equity"], label="VolTargetTQQQStrategy", linewidth=1.8)
     ax.plot(curves.index, curves["benchmark_equity"], label="TQQQ buy-and-hold", linewidth=1.6)
@@ -175,12 +220,13 @@ def _save_equity_chart(curves: pd.DataFrame, output_path: Path, *, log_scale: bo
     ax.set_ylabel("Normalized equity")
     ax.grid(True, alpha=0.3)
     ax.legend()
+    _add_metric_box(ax, metric_text)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
 
 
-def _save_drawdown_chart(curves: pd.DataFrame, output_path: Path) -> None:
+def _save_drawdown_chart(curves: pd.DataFrame, output_path: Path, *, metric_text: str) -> None:
     fig, ax = plt.subplots(figsize=(11, 5))
     ax.plot(curves.index, curves["strategy_drawdown"], label="VolTargetTQQQStrategy", linewidth=1.6)
     ax.plot(curves.index, curves["benchmark_drawdown"], label="TQQQ buy-and-hold", linewidth=1.6)
@@ -188,12 +234,13 @@ def _save_drawdown_chart(curves: pd.DataFrame, output_path: Path) -> None:
     ax.set_ylabel("Drawdown")
     ax.grid(True, alpha=0.3)
     ax.legend()
+    _add_metric_box(ax, metric_text, loc="lower left")
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
 
 
-def _save_relative_chart(curves: pd.DataFrame, output_path: Path) -> None:
+def _save_relative_chart(curves: pd.DataFrame, output_path: Path, *, metric_text: str) -> None:
     fig, ax = plt.subplots(figsize=(11, 5))
     ax.plot(curves.index, curves["relative_equity"], label="VolTarget / TQQQ", linewidth=1.7)
     ax.axhline(1.0, color="black", linestyle="--", linewidth=1.0, label="Parity")
@@ -201,6 +248,7 @@ def _save_relative_chart(curves: pd.DataFrame, output_path: Path) -> None:
     ax.set_ylabel("Relative equity")
     ax.grid(True, alpha=0.3)
     ax.legend()
+    _add_metric_box(ax, metric_text)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
@@ -271,8 +319,14 @@ Recommendation = {summary_row["recommendation"]}
 - Final equity ratio: {summary_row["final_equity_ratio"]}
 - Strategy CAGR: {summary_row["strategy_cagr"]}
 - TQQQ CAGR: {summary_row["tqqq_cagr"]}
+- Strategy annualized volatility: {summary_row["strategy_volatility"]}
+- TQQQ annualized volatility: {summary_row["tqqq_volatility"]}
+- Strategy Sharpe: {summary_row["strategy_sharpe"]}
+- TQQQ Sharpe: {summary_row["tqqq_sharpe"]}
 - Strategy max drawdown: {summary_row["strategy_max_drawdown"]}
 - TQQQ max drawdown: {summary_row["tqqq_max_drawdown"]}
+- Strategy Calmar ratio: {summary_row["strategy_calmar"]}
+- TQQQ Calmar ratio: {summary_row["tqqq_calmar"]}
 
 ## Charts
 
@@ -321,32 +375,16 @@ def generate_equity_visualizations(input_dir: Path, output_dir: Path) -> Visuali
     tqqq_cagr = annualized_return(curves["benchmark_equity"])
     strategy_max_dd = float(curves["strategy_drawdown"].min())
     tqqq_max_dd = float(curves["benchmark_drawdown"].min())
+    strategy_returns = curves["strategy_equity"].pct_change().fillna(0.0)
+    tqqq_returns = curves["benchmark_equity"].pct_change().fillna(0.0)
+    strategy_volatility = annualized_volatility(strategy_returns)
+    tqqq_volatility = annualized_volatility(tqqq_returns)
+    strategy_sharpe = sharpe_ratio(strategy_returns)
+    tqqq_sharpe = sharpe_ratio(tqqq_returns)
+    strategy_calmar = calmar_ratio(strategy_cagr, strategy_max_dd)
+    tqqq_calmar = calmar_ratio(tqqq_cagr, tqqq_max_dd)
 
-    title_suffix = f"final equity: {strategy_final:.3f} vs {tqqq_final:.3f}"
     chart_paths: Dict[str, Path] = {}
-    chart_paths["equity_curve_linear"] = output_dir / "equity_curve_linear.png"
-    _save_equity_chart(
-        curves,
-        chart_paths["equity_curve_linear"],
-        log_scale=False,
-        title=f"VolTargetTQQQStrategy vs TQQQ buy-and-hold\n{title_suffix}",
-    )
-    chart_paths["equity_curve_log"] = output_dir / "equity_curve_log.png"
-    _save_equity_chart(
-        curves,
-        chart_paths["equity_curve_log"],
-        log_scale=True,
-        title=f"VolTargetTQQQStrategy vs TQQQ buy-and-hold (log scale)\n{title_suffix}",
-    )
-    chart_paths["drawdown_curve"] = output_dir / "drawdown_curve.png"
-    _save_drawdown_chart(curves, chart_paths["drawdown_curve"])
-    chart_paths["relative_equity_curve"] = output_dir / "relative_equity_curve.png"
-    _save_relative_chart(curves, chart_paths["relative_equity_curve"])
-
-    if yearly is not None:
-        chart_paths["yearly_return_comparison"] = output_dir / "yearly_return_comparison.png"
-        _save_yearly_chart(yearly, chart_paths["yearly_return_comparison"])
-
     exposure_column = _find_exposure_column(stitched)
     exposure_note = "Exposure column unavailable; exposure chart was skipped."
     if exposure_column is not None:
@@ -378,8 +416,14 @@ def generate_equity_visualizations(input_dir: Path, output_dir: Path) -> Visuali
         "final_equity_ratio": final_ratio,
         "strategy_cagr": strategy_cagr,
         "tqqq_cagr": tqqq_cagr,
+        "strategy_volatility": strategy_volatility,
+        "tqqq_volatility": tqqq_volatility,
+        "strategy_sharpe": strategy_sharpe,
+        "tqqq_sharpe": tqqq_sharpe,
         "strategy_max_drawdown": strategy_max_dd,
         "tqqq_max_drawdown": tqqq_max_dd,
+        "strategy_calmar": strategy_calmar,
+        "tqqq_calmar": tqqq_calmar,
         "stage3_full_period_ratio_vs_tqqq": _as_float(candidate.get("full_period_ratio_vs_tqqq")),
         "stage3_ex_2022_ratio_vs_tqqq": _as_float(candidate.get("ex_2022_ratio_vs_tqqq")),
         "stage3_ex_2022_ratio_vs_simple_voltarget_no_trend": _as_float(
@@ -394,6 +438,33 @@ def generate_equity_visualizations(input_dir: Path, output_dir: Path) -> Visuali
         else "TQQQ",
         "warning": "not proven persistent alpha; not production-ready",
     }
+
+    metric_text = _metric_text(summary_row)
+    title_suffix = f"final equity: {strategy_final:.3f} vs {tqqq_final:.3f}"
+    chart_paths["equity_curve_linear"] = output_dir / "equity_curve_linear.png"
+    _save_equity_chart(
+        curves,
+        chart_paths["equity_curve_linear"],
+        log_scale=False,
+        title=f"VolTargetTQQQStrategy vs TQQQ buy-and-hold\n{title_suffix}",
+        metric_text=metric_text,
+    )
+    chart_paths["equity_curve_log"] = output_dir / "equity_curve_log.png"
+    _save_equity_chart(
+        curves,
+        chart_paths["equity_curve_log"],
+        log_scale=True,
+        title=f"VolTargetTQQQStrategy vs TQQQ buy-and-hold (log scale)\n{title_suffix}",
+        metric_text=metric_text,
+    )
+    chart_paths["drawdown_curve"] = output_dir / "drawdown_curve.png"
+    _save_drawdown_chart(curves, chart_paths["drawdown_curve"], metric_text=metric_text)
+    chart_paths["relative_equity_curve"] = output_dir / "relative_equity_curve.png"
+    _save_relative_chart(curves, chart_paths["relative_equity_curve"], metric_text=metric_text)
+
+    if yearly is not None:
+        chart_paths["yearly_return_comparison"] = output_dir / "yearly_return_comparison.png"
+        _save_yearly_chart(yearly, chart_paths["yearly_return_comparison"])
 
     summary = pd.DataFrame([summary_row])
     summary_path = output_dir / "visualization_summary.csv"

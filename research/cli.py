@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 from .data import load_prices
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
+from .execution_financing import run_execution_financing_audit
 from .final_voltarget_audit import run_final_voltarget_audit
 from .metrics import annualized_return, annualized_volatility, max_drawdown, sharpe_ratio
 from .reports import (
@@ -561,6 +562,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for final VolTarget audit CSV, Markdown, and chart outputs.",
     )
 
+
+    execution_financing = subparsers.add_parser(
+        "audit-voltarget-execution-financing",
+        help="Replay the locked Stage 3 VolTarget candidate under execution, slippage, and financing assumptions.",
+    )
+    execution_financing.add_argument(
+        "--input-dir",
+        required=True,
+        help="Stage 3 tournament output directory containing the selected VolTarget candidate.",
+    )
+    execution_financing.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for execution/financing summary, report, and heatmap outputs.",
+    )
+    execution_financing.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date, close, and OHLC columns for offline replay.",
+    )
+    execution_financing.add_argument(
+        "--cache-dir",
+        default="./price_cache",
+        help="Price cache directory used when --data-csv is not supplied.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -866,6 +891,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Final classification: {result.final_classification}")
             for name, path in result.artifact_paths.items():
                 print(f"Wrote {name}: {path}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "audit-voltarget-execution-financing":
+        try:
+            result = run_execution_financing_audit(
+                input_dir=Path(args.input_dir),
+                output_dir=Path(args.output_dir),
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+                cache_dir=args.cache_dir,
+            )
+            print(f"Wrote execution/financing summary: {result.summary_path}")
+            print(f"Wrote execution/financing report: {result.report_path}")
+            print(f"Wrote sensitivity heatmap: {result.heatmap_path}")
+            print(
+                "Still beats TQQQ across all tested scenarios: "
+                f"{result.still_beats_tqqq_after_realistic_financing}"
+            )
+            print(f"Breaking assumption: {result.breaking_assumption}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

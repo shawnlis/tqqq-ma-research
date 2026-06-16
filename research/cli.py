@@ -45,6 +45,7 @@ from .tournament import run_tournament_config
 from .visualization import generate_equity_visualizations
 from .voltarget_simplification_battle import run_simplification_battle
 from .voltarget_execution_semantics import run_execution_semantics_audit
+from .voltarget_daily_monitor import run_daily_voltarget_monitor
 from .voltarget_live_monitor import generate_voltarget_signal
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 from .voltarget_timing_audit import audit_voltarget_timing
@@ -673,6 +674,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-csv",
         help="Optional fixture CSV with Date, close, and OHLC columns for offline replay.",
     )
+    daily_voltarget_monitor = subparsers.add_parser(
+        "run-daily-voltarget-monitor",
+        help="Run the paper-trading-only daily VolTarget monitor wrapper.",
+    )
+    daily_voltarget_monitor.add_argument(
+        "--config",
+        required=True,
+        help="Path to voltarget_live_monitor.yaml.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -1074,6 +1084,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
+    if command == "run-daily-voltarget-monitor":
+        result = run_daily_voltarget_monitor(config_path=Path(args.config))
+        print(f"Wrote daily run status: {result.status_path}")
+        print(f"Wrote daily run log: {result.log_path}")
+        print(f"Daily monitor status: {result.status['status']}")
+        if result.status.get("error"):
+            print(f"ERROR: {result.status['error']}", file=sys.stderr)
+        return 0 if result.status["status"] in {"ok", "warning"} else 1
     if command == "run-open-questions":
         run_open_questions_config(
             Path(args.pack_path),

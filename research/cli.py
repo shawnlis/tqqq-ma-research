@@ -44,6 +44,7 @@ from .regime_allocation_audit import audit_regime_allocation
 from .tournament import run_tournament_config
 from .visualization import generate_equity_visualizations
 from .voltarget_simplification_battle import run_simplification_battle
+from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
 from .voltarget_fair_leverage import write_stage2_fair_leverage_outputs
@@ -610,6 +611,25 @@ def build_parser() -> argparse.ArgumentParser:
         default="./price_cache",
         help="Price cache directory used when --data-csv is not supplied.",
     )
+    risk_dashboard = subparsers.add_parser(
+        "build-voltarget-risk-dashboard",
+        help="Build a paper-trading-only risk policy dashboard for the locked Stage 3 VolTarget candidate.",
+    )
+    risk_dashboard.add_argument(
+        "--config",
+        required=True,
+        help="Path to voltarget_risk_policy.yaml.",
+    )
+    risk_dashboard.add_argument(
+        "--input-dir",
+        default="outputs/tournament_voltarget_stage3",
+        help="Stage 3 tournament output directory containing the selected VolTarget candidate.",
+    )
+    risk_dashboard.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for risk dashboard Markdown, CSV, and chart outputs.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -956,6 +976,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Post-2022 winner: {result.post_2022_winner}")
             print(f"Best drawdown model: {result.best_drawdown_model}")
             print(f"Trend/momentum answer: {result.trend_momentum_answer}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "build-voltarget-risk-dashboard":
+        try:
+            result = build_voltarget_risk_dashboard(
+                config_path=Path(args.config),
+                input_dir=Path(args.input_dir),
+                output_dir=Path(args.output_dir),
+            )
+            print(f"Wrote dashboard: {result.dashboard_path}")
+            print(f"Wrote dashboard summary: {result.summary_path}")
+            print(f"Wrote risk policy breaches: {result.breaches_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

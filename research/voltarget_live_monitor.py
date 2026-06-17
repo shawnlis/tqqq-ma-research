@@ -67,11 +67,25 @@ def load_monitor_config(config_path: Path) -> Dict[str, Any]:
     config["financing_applies_above_exposure"] = float(config.get("financing_applies_above_exposure", 1.0))
     config["financing_day_count_basis"] = int(config.get("financing_day_count_basis", 252))
     config["stale_data_warning_days"] = int(config["stale_data_warning_days"])
+    config["max_allowed_stale_days"] = int(config.get("max_allowed_stale_days", config["stale_data_warning_days"]))
     config["target_symbol"] = str(config["target_symbol"]).upper()
     config["benchmark_symbol"] = str(config["benchmark_symbol"]).upper()
     config["classification"] = str(config["classification"])
     config["production_ready"] = bool(config["production_ready"])
     config["paper_trading_only"] = bool(config.get("paper_trading_only", True))
+    config["paper_ledger_mode"] = str(config.get("paper_ledger_mode", "manual")).lower()
+    config["paper_starting_equity"] = float(config.get("paper_starting_equity", 100000.0))
+    config["paper_execution_model"] = normalize_execution_model(
+        config.get("paper_execution_model", config["execution_assumption"])
+    )
+    config["paper_fill_price_source"] = str(config.get("paper_fill_price_source", "next_open")).lower()
+    config["fallback_fill_price_source"] = str(config.get("fallback_fill_price_source", "latest_close")).lower()
+    config["assumed_slippage_bps"] = float(config.get("assumed_slippage_bps", config.get("slippage_bps", 0.0)))
+    config["assumed_transaction_cost_bps"] = float(
+        config.get("assumed_transaction_cost_bps", config.get("transaction_cost_bps", 0.0))
+    )
+    config["auto_paper_ledger_enabled"] = bool(config.get("auto_paper_ledger_enabled", False))
+    config["manual_ledger_required"] = bool(config.get("manual_ledger_required", True))
     return config
 
 
@@ -229,7 +243,7 @@ def _data_quality(config: Dict[str, Any], frame: pd.DataFrame, as_of_date: Optio
     latest_date = pd.Timestamp(frame.index[-1]).normalize()
     as_of = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.today().normalize()
     stale_days = int(max((as_of - latest_date).days, 0))
-    stale_limit = int(config["stale_data_warning_days"])
+    stale_limit = int(config.get("max_allowed_stale_days", config["stale_data_warning_days"]))
     required_columns = [
         "target_exposure",
         "position",

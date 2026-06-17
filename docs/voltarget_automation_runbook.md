@@ -10,18 +10,18 @@ Run after the market close data is available, or the next Singapore morning:
 
 ```powershell
 cd "C:\Strategies\TQQQ MA"
-python -m research.cli run-daily-voltarget-monitor --config configs\voltarget_live_monitor.yaml
-python -m research.cli track-execution-drift --config configs\voltarget_live_monitor.yaml --signal-dir outputs\live_signal --output-dir outputs\execution_drift
-python -m research.cli check-voltarget-monitor-health --output-dir outputs\live_signal
+python -m research.cli run-automated-voltarget-paper-monitor --config configs\voltarget_live_monitor.yaml
 ```
 
-If the manual ledger exists, also run:
+The one-command workflow runs signal generation, the automated paper ledger, execution drift tracking, financing tracking, the risk dashboard, and health checks.
+
+Manual ledger reconciliation remains optional. If the manual ledger exists, you may also run:
 
 ```powershell
 python -m research.cli reconcile-paper-trades --signal-dir outputs\live_signal --ledger data\paper_trading\voltarget_paper_trades.csv --output-dir outputs\paper_reconciliation
 ```
 
-If `data\paper_trading\voltarget_paper_trades.csv` does not exist, that is a warning, not an automation failure.
+If `auto_paper_ledger_enabled: true` and `manual_ledger_required: false`, a missing manual ledger is not an automation warning.
 
 ## Manual Weekly Review
 
@@ -139,18 +139,22 @@ outputs/live_signal/monitor_health_report.md
 Inspect these files each morning:
 
 - `outputs/live_signal/latest_automation_status.json`
+- `outputs/auto_paper_ledger/auto_paper_report.md`
+- `outputs/auto_paper_ledger/auto_paper_summary.csv`
+- `outputs/auto_paper_ledger/auto_paper_ledger.csv`
 - `outputs/live_signal/latest_run_status.json`
 - `outputs/live_signal/signal_today.json`
 - `outputs/live_signal/data_quality_report.csv`
 - `outputs/live_signal/financing_cost_report.md`
 - `outputs/execution_drift/execution_drift_report.md`
-- `outputs/paper_reconciliation/paper_trade_reconciliation_report.md`, if the manual ledger exists
+- `outputs/paper_reconciliation/paper_trade_reconciliation_report.md`, if the optional manual ledger exists
 - latest file under `logs/voltarget_monitor/`
 
 ## Warning Meanings
 
 - Stale data: the latest price date is older than the configured freshness threshold.
-- Missing ledger: manual paper ledger has not been started; signal monitoring can continue, but execution validation is incomplete.
+- Pending fill: the next open needed for an automated paper fill is not available yet.
+- Missing manual ledger: ignored when auto paper ledger mode is enabled and manual ledger is not required.
 - Execution drift warning: observable open/close execution behavior is diverging from model assumptions.
 - Financing warning: exposure above 1.0 creates financing drag; review `financing_cost_report.md`.
 - Missing weekly CLI: weekly review automation is not installed; daily paper monitoring is unaffected.

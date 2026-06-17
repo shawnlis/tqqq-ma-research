@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .data import load_prices
+from .auto_paper_ledger import update_auto_paper_ledger
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
 from .execution_drift import run_execution_drift_tracking
@@ -47,7 +48,7 @@ from .tournament import run_tournament_config
 from .visualization import generate_equity_visualizations
 from .voltarget_simplification_battle import run_simplification_battle
 from .voltarget_execution_semantics import run_execution_semantics_audit
-from .voltarget_daily_monitor import run_daily_voltarget_monitor
+from .voltarget_daily_monitor import run_automated_voltarget_paper_monitor, run_daily_voltarget_monitor
 from .voltarget_live_monitor import generate_voltarget_signal
 from .voltarget_monitor_health import check_voltarget_monitor_health
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
@@ -686,6 +687,42 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to voltarget_live_monitor.yaml.",
     )
+    auto_paper_ledger = subparsers.add_parser(
+        "update-auto-paper-ledger",
+        help="Update the automated VolTarget paper ledger from generated signals and observable OHLC prices.",
+    )
+    auto_paper_ledger.add_argument(
+        "--config",
+        required=True,
+        help="Path to voltarget_live_monitor.yaml.",
+    )
+    auto_paper_ledger.add_argument(
+        "--signal-dir",
+        default="outputs/live_signal",
+        help="Directory containing signal_history.csv and signal_today.json.",
+    )
+    auto_paper_ledger.add_argument(
+        "--output-dir",
+        default="outputs/auto_paper_ledger",
+        help="Directory for auto paper ledger outputs.",
+    )
+    auto_paper_ledger.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date and adjusted OHLC columns.",
+    )
+    automated_voltarget_monitor = subparsers.add_parser(
+        "run-automated-voltarget-paper-monitor",
+        help="Run the full paper-monitor workflow with automated ledger, drift tracking, financing, dashboard, and health checks.",
+    )
+    automated_voltarget_monitor.add_argument(
+        "--config",
+        required=True,
+        help="Path to voltarget_live_monitor.yaml.",
+    )
+    automated_voltarget_monitor.add_argument(
+        "--data-csv",
+        help="Optional fixture CSV with Date and adjusted OHLC columns.",
+    )
     reconcile_paper_trades_parser = subparsers.add_parser(
         "reconcile-paper-trades",
         help="Reconcile manual VolTarget paper ledger rows against generated paper signals.",
@@ -742,6 +779,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         required=True,
         help="Directory containing live signal outputs and receiving health-check artifacts.",
+    )
+    health_check.add_argument(
+        "--config",
+        default="configs/voltarget_live_monitor.yaml",
+        help="Path to voltarget_live_monitor.yaml.",
     )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
@@ -1154,6 +1196,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if result.status.get("error"):
             print(f"ERROR: {result.status['error']}", file=sys.stderr)
         return 0 if result.status["status"] in {"ok", "warning"} else 1
+    if command == "update-auto-paper-ledger":
+        try:
+            result = update_auto_paper_ledger(
+                config_path=Path(args.config),
+                signal_dir=Path(args.signal_dir),
+                output_dir=Path(args.output_dir),
+                data_csv=Path(args.data_csv) if args.data_csv else None,
+            )
+            print(f"Wrote auto paper ledger: {result.ledger_path}")
+            print(f"Wrote auto paper summary: {result.summary_path}")
+            print(f"Wrote auto paper report: {result.report_path}")
+            for name, path in result.chart_paths.items():
+                print(f"Wrote {name}: {path}")
+            print(f"Latest auto paper status: {result.latest_status}")
+            print(f"Latest target exposure: {result.latest_row.get('target_exposure', '')}")
+            print(f"Latest paper equity: {result.latest_row.get('paper_equity', '')}")
+            print(f"Latest relative equity vs TQQQ: {result.latest_row.get('relative_equity_vs_tqqq', '')}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "run-automated-voltarget-paper-monitor":
+        result = run_automated_voltarget_paper_monitor(
+            config_path=Path(args.config),
+            data_csv=Path(args.data_csv) if args.data_csv else None,
+        )
+        print(f"Wrote automation status: {result.status_path}")
+        print(f"Wrote daily run log: {result.log_path}")
+        print(f"Automated paper monitor status: {result.status['status']}")
+        ledger_step = result.status.get("steps", {}).get("auto_paper_ledger", {})
+        latest = ledger_step.get("latest_row", {}) if isinstance(ledger_step, dict) else {}
+        if latest:
+            print(f"Latest auto paper ledger status: {latest.get('status', '')}")
+            print(f"Latest target exposure: {latest.get('target_exposure', '')}")
+            print(f"Latest paper equity: {latest.get('paper_equity', '')}")
+            print(f"Latest relative equity vs TQQQ: {latest.get('relative_equity_vs_tqqq', '')}")
+        if result.status.get("error"):
+            print(f"ERROR: {result.status['error']}", file=sys.stderr)
+        return 0 if result.status["status"] in {"ok", "warning"} else 1
     if command == "reconcile-paper-trades":
         try:
             result = reconcile_paper_trades(
@@ -1188,7 +1269,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
     if command == "check-voltarget-monitor-health":
-        result = check_voltarget_monitor_health(output_dir=Path(args.output_dir))
+        result = check_voltarget_monitor_health(output_dir=Path(args.output_dir), config_path=Path(args.config))
         print(f"Wrote monitor health summary: {result.summary_path}")
         print(f"Wrote monitor health report: {result.report_path}")
         print(f"Monitor health status: {result.overall_status}")

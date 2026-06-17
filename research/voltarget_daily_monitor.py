@@ -9,17 +9,30 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from .data_snapshot import verify_data_snapshot
+from .auto_paper_ledger import update_auto_paper_ledger
+from .execution_drift import run_execution_drift_tracking
 from .visualization import generate_equity_visualizations
 from .voltarget_live_monitor import build_monitor_frame, generate_voltarget_signal, load_monitor_config
+from .voltarget_monitor_health import check_voltarget_monitor_health
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 
 
 DEFAULT_SIGNAL_OUTPUT_DIR = Path("outputs/live_signal")
 DEFAULT_VISUALIZATION_OUTPUT_DIR = Path("outputs/visualizations/voltarget_stage3")
+DEFAULT_AUTO_LEDGER_OUTPUT_DIR = Path("outputs/auto_paper_ledger")
+DEFAULT_EXECUTION_DRIFT_OUTPUT_DIR = Path("outputs/execution_drift")
 
 
 @dataclass(frozen=True)
 class DailyMonitorResult:
+    output_dir: Path
+    status_path: Path
+    log_path: Path
+    status: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AutomatedPaperMonitorResult:
     output_dir: Path
     status_path: Path
     log_path: Path
@@ -63,7 +76,7 @@ def check_monitor_data_freshness(
     latest_date = pd.Timestamp(frame.index[-1]).normalize()
     as_of = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.today().normalize()
     stale_days = int(max((as_of - latest_date).days, 0))
-    stale_limit = int(config["stale_data_warning_days"])
+    stale_limit = int(config.get("max_allowed_stale_days", config["stale_data_warning_days"]))
     status = "ok" if stale_days <= stale_limit else "warning"
     return {
         "status": status,
@@ -115,6 +128,28 @@ def _log_row(payload: Dict[str, Any]) -> Dict[str, Any]:
         "signal_status": signal.get("status", ""),
         "risk_dashboard_status": risk.get("status", ""),
         "visualization_status": visualization.get("status", ""),
+        "error": payload.get("error", ""),
+    }
+
+
+def _automation_log_row(payload: Dict[str, Any]) -> Dict[str, Any]:
+    steps = payload.get("steps", {})
+    daily = steps.get("daily_monitor", {})
+    ledger = steps.get("auto_paper_ledger", {})
+    drift = steps.get("execution_drift", {})
+    health = steps.get("health_check", {})
+    latest_ledger = ledger.get("latest_row", {}) if isinstance(ledger.get("latest_row", {}), dict) else {}
+    return {
+        "run_date": payload["run_date"],
+        "generated_at": payload["generated_at"],
+        "status": payload["status"],
+        "daily_monitor_status": daily.get("status", ""),
+        "auto_paper_ledger_status": ledger.get("status", ""),
+        "execution_drift_status": drift.get("status", ""),
+        "health_status": health.get("overall_status", ""),
+        "latest_target_exposure": latest_ledger.get("target_exposure", ""),
+        "latest_paper_equity": latest_ledger.get("paper_equity", ""),
+        "latest_relative_equity_vs_tqqq": latest_ledger.get("relative_equity_vs_tqqq", ""),
         "error": payload.get("error", ""),
     }
 
@@ -235,6 +270,143 @@ def run_daily_voltarget_monitor(
     _append_daily_log(log_path, _log_row(payload))
     return DailyMonitorResult(
         output_dir=effective_output_dir,
+        status_path=status_path,
+        log_path=log_path,
+        status=payload,
+    )
+
+
+def run_automated_voltarget_paper_monitor(
+    *,
+    config_path: Path,
+    signal_dir: Path = DEFAULT_SIGNAL_OUTPUT_DIR,
+    auto_ledger_output_dir: Path = DEFAULT_AUTO_LEDGER_OUTPUT_DIR,
+    execution_drift_dir: Path = DEFAULT_EXECUTION_DRIFT_OUTPUT_DIR,
+    data_csv: Optional[Path] = None,
+    as_of_date: Optional[pd.Timestamp] = None,
+    generated_at: Optional[str] = None,
+    drift_threshold: float = 0.01,
+) -> AutomatedPaperMonitorResult:
+    generated = _utc_now(generated_at)
+    run_date = _run_date(as_of_date)
+    signal_dir = Path(signal_dir)
+    signal_dir.mkdir(parents=True, exist_ok=True)
+    status_path = signal_dir / "latest_automation_status.json"
+    log_path = signal_dir / "daily_run_log.csv"
+    payload: Dict[str, Any] = {
+        "generated_at": generated,
+        "run_date": run_date,
+        "status": "failed",
+        "paper_trading_only": True,
+        "production_ready": False,
+        "no_broker_integration": True,
+        "no_auto_trading": True,
+        "steps": {},
+        "outputs": {
+            "latest_automation_status": str(status_path),
+            "daily_run_log": str(log_path),
+        },
+        "error": "",
+    }
+
+    try:
+        daily = run_daily_voltarget_monitor(
+            config_path=Path(config_path),
+            output_dir=signal_dir,
+            data_csv=data_csv,
+            as_of_date=as_of_date,
+            generated_at=generated,
+        )
+        payload["steps"]["daily_monitor"] = {
+            "status": daily.status.get("status", "failed"),
+            "status_path": str(daily.status_path),
+            "log_path": str(daily.log_path),
+        }
+        if daily.status.get("status") == "failed":
+            raise ValueError(str(daily.status.get("error", "daily monitor failed")))
+
+        ledger = update_auto_paper_ledger(
+            config_path=Path(config_path),
+            signal_dir=signal_dir,
+            output_dir=Path(auto_ledger_output_dir),
+            data_csv=data_csv,
+        )
+        payload["steps"]["auto_paper_ledger"] = {
+            "status": ledger.latest_status,
+            "ledger": str(ledger.ledger_path),
+            "summary": str(ledger.summary_path),
+            "report": str(ledger.report_path),
+            "latest_row": ledger.latest_row,
+        }
+        payload["outputs"].update(
+            {
+                "auto_paper_ledger": str(ledger.ledger_path),
+                "auto_paper_summary": str(ledger.summary_path),
+                "auto_paper_report": str(ledger.report_path),
+            }
+        )
+
+        drift = run_execution_drift_tracking(
+            config_path=Path(config_path),
+            signal_dir=signal_dir,
+            output_dir=Path(execution_drift_dir),
+            data_csv=data_csv,
+            drift_threshold=float(drift_threshold),
+        )
+        payload["steps"]["execution_drift"] = {
+            "status": "warning" if bool(drift.metrics.get("drift_exceeds_policy_threshold", False)) else "ok",
+            "summary": str(drift.summary_path),
+            "report": str(drift.report_path),
+            "metrics": drift.metrics,
+        }
+        payload["outputs"].update(
+            {
+                "execution_drift_summary": str(drift.summary_path),
+                "execution_drift_report": str(drift.report_path),
+            }
+        )
+
+        payload["steps"]["financing_tracking"] = {
+            "status": "included",
+            "detail": "financing_cost_history.csv and financing_cost_report.md are written by the daily monitor",
+        }
+        payload["steps"]["risk_dashboard"] = {
+            "status": daily.status.get("steps", {}).get("risk_policy_dashboard", {}).get("status", "unknown"),
+        }
+
+        health = check_voltarget_monitor_health(
+            output_dir=signal_dir,
+            config_path=Path(config_path),
+            auto_paper_ledger_dir=Path(auto_ledger_output_dir),
+            execution_drift_dir=Path(execution_drift_dir),
+        )
+        payload["steps"]["health_check"] = {
+            "overall_status": health.overall_status,
+            "summary": str(health.summary_path),
+            "report": str(health.report_path),
+        }
+        payload["outputs"].update(
+            {
+                "monitor_health_summary": str(health.summary_path),
+                "monitor_health_report": str(health.report_path),
+            }
+        )
+
+        warning = (
+            daily.status.get("status") == "warning"
+            or ledger.latest_status in {"pending_fill", "stale_data", "missing_price_data"}
+            or payload["steps"]["execution_drift"]["status"] == "warning"
+            or health.overall_status == "warning"
+        )
+        payload["status"] = "warning" if warning else "ok"
+    except Exception as exc:
+        payload["status"] = "failed"
+        payload["error"] = str(exc)
+
+    _write_status(status_path, payload)
+    _append_daily_log(log_path, _automation_log_row(payload))
+    return AutomatedPaperMonitorResult(
+        output_dir=signal_dir,
         status_path=status_path,
         log_path=log_path,
         status=payload,

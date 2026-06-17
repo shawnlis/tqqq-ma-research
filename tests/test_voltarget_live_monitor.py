@@ -114,17 +114,27 @@ def _write_fixture(tmp_path: Path, *, future_multiplier: float = 1.0) -> tuple[P
                 "execution_assumption": "next_open_to_next_open",
                 "transaction_cost_bps": 10.0,
                 "slippage_bps": 0.0,
+                "paper_ledger_mode": "auto",
+                "paper_starting_equity": 100000,
+                "paper_execution_model": "next_open_to_next_open",
+                "paper_fill_price_source": "next_open",
+                "fallback_fill_price_source": "latest_close",
+                "assumed_slippage_bps": 5.0,
+                "assumed_transaction_cost_bps": 10.0,
                 "financing_annual_cost": 0.06,
                 "annual_financing_rate_assumption": 0.06,
                 "financing_applies_above_exposure": 1.0,
                 "financing_day_count_basis": 252,
                 "stale_data_warning_days": 5,
+                "max_allowed_stale_days": 1,
                 "target_symbol": "TQQQ",
                 "benchmark_symbol": "TQQQ",
                 "risk_policy_config": str(policy_path),
                 "classification": "crash_control_candidate",
                 "production_ready": False,
                 "paper_trading_only": True,
+                "auto_paper_ledger_enabled": True,
+                "manual_ledger_required": False,
             }
         ),
         encoding="utf-8",
@@ -285,3 +295,13 @@ def test_live_monitor_config_loads_new_financing_fields(tmp_path: Path) -> None:
     assert config["annual_financing_rate_assumption"] == pytest.approx(0.06)
     assert config["financing_applies_above_exposure"] == pytest.approx(1.0)
     assert config["financing_day_count_basis"] == 252
+    assert config["paper_ledger_mode"] == "auto"
+    assert config["paper_starting_equity"] == pytest.approx(100000)
+    assert config["paper_execution_model"] == "next_open_to_next_open"
+    assert config["paper_fill_price_source"] == "next_open"
+    assert config["fallback_fill_price_source"] == "latest_close"
+    assert config["assumed_slippage_bps"] == pytest.approx(5.0)
+    assert config["assumed_transaction_cost_bps"] == pytest.approx(10.0)
+    assert config["max_allowed_stale_days"] == 1
+    assert config["auto_paper_ledger_enabled"] is True
+    assert config["manual_ledger_required"] is False

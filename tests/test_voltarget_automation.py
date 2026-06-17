@@ -4,11 +4,16 @@ import json
 import os
 import shutil
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pandas as pd
+import pytest
+import yaml
 
 from research.cli import main
+from research import voltarget_daily_monitor
+from research.voltarget_daily_monitor import run_automated_voltarget_paper_monitor
 from research.voltarget_monitor_health import check_voltarget_monitor_health
 
 
@@ -59,6 +64,61 @@ def _write_health_fixture(tmp_path: Path, *, stale_days: int = 0, ledger_exists:
     return live, drift, reconcile, repo_root
 
 
+def _write_auto_config(path: Path) -> Path:
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "input_dir": "unused",
+                "cache_dir": "./price_cache",
+                "execution_assumption": "next_open_to_next_open",
+                "transaction_cost_bps": 10.0,
+                "slippage_bps": 0.0,
+                "paper_ledger_mode": "auto",
+                "paper_starting_equity": 100000,
+                "paper_execution_model": "next_open_to_next_open",
+                "paper_fill_price_source": "next_open",
+                "fallback_fill_price_source": "latest_close",
+                "assumed_slippage_bps": 5.0,
+                "assumed_transaction_cost_bps": 10.0,
+                "financing_annual_cost": 0.06,
+                "annual_financing_rate_assumption": 0.06,
+                "financing_applies_above_exposure": 1.0,
+                "financing_day_count_basis": 252,
+                "stale_data_warning_days": 5,
+                "max_allowed_stale_days": 1,
+                "target_symbol": "TQQQ",
+                "benchmark_symbol": "TQQQ",
+                "classification": "crash_control_candidate",
+                "production_ready": False,
+                "paper_trading_only": True,
+                "auto_paper_ledger_enabled": True,
+                "manual_ledger_required": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_auto_ledger(output_dir: Path, *, status: str = "ok") -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "signal_date": "2026-06-12",
+                "execution_date": "2026-06-15",
+                "status": status,
+                "target_exposure": 1.1,
+                "paper_equity": 100500.0,
+                "relative_equity_vs_tqqq": 1.01,
+                "paper_trading_only": True,
+                "no_broker_integration": True,
+                "no_auto_trading": True,
+            }
+        ]
+    ).to_csv(output_dir / "auto_paper_ledger.csv", index=False)
+
+
 def test_daily_script_template_contains_no_broker_or_order_command() -> None:
     text = Path("scripts/run_voltarget_daily_monitor.ps1.template").read_text(encoding="utf-8").lower()
     forbidden_commands = ["submit_order", "place_order", "create_order", "ib_insync", "broker_api", "auto_trade"]
@@ -84,6 +144,7 @@ def test_health_check_passes_with_fixture_outputs(tmp_path: Path) -> None:
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
     result = check_voltarget_monitor_health(
         output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
         ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
         execution_drift_dir=drift,
         paper_reconciliation_dir=reconcile,
@@ -98,6 +159,7 @@ def test_health_check_warns_on_stale_data(tmp_path: Path) -> None:
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path, stale_days=6)
     result = check_voltarget_monitor_health(
         output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
         ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
         execution_drift_dir=drift,
         paper_reconciliation_dir=reconcile,
@@ -112,6 +174,7 @@ def test_health_check_warns_if_ledger_missing_without_hard_fail(tmp_path: Path) 
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path, ledger_exists=False)
     result = check_voltarget_monitor_health(
         output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
         ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
         execution_drift_dir=drift,
         paper_reconciliation_dir=reconcile,
@@ -121,6 +184,48 @@ def test_health_check_warns_if_ledger_missing_without_hard_fail(tmp_path: Path) 
     assert result.overall_status == "warning"
     assert row["status"] == "warning"
     assert not bool(row["hard_fail"])
+
+
+def test_health_check_does_not_warn_on_missing_manual_ledger_in_auto_mode(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path, ledger_exists=False)
+    config = _write_auto_config(tmp_path / "config.yaml")
+    auto_dir = tmp_path / "outputs" / "auto_paper_ledger"
+    _write_auto_ledger(auto_dir)
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=config,
+        ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
+        auto_paper_ledger_dir=auto_dir,
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    row = result.summary.set_index("check").loc["ledger_reconciliation_status"]
+    assert result.overall_status == "ok"
+    assert row["status"] == "ok"
+    assert "manual ledger not required" in row["detail"]
+
+
+def test_health_check_warns_if_auto_paper_ledger_is_stale(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
+    config = _write_auto_config(tmp_path / "config.yaml")
+    auto_dir = tmp_path / "outputs" / "auto_paper_ledger"
+    _write_auto_ledger(auto_dir, status="stale_data")
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=config,
+        auto_paper_ledger_dir=auto_dir,
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    row = result.summary.set_index("check").loc["auto_paper_latest_status"]
+    assert result.overall_status == "warning"
+    assert row["status"] == "warning"
 
 
 def test_health_check_cli_writes_outputs(tmp_path: Path, monkeypatch) -> None:
@@ -154,6 +259,63 @@ def test_daily_template_simulated_run_writes_latest_automation_status(tmp_path: 
     assert status["paper_trading_only"] is True
     assert status["no_auto_trading"] is True
     assert status["status"] == "ok"
+
+
+def test_one_command_workflow_calls_expected_components(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    config = _write_auto_config(tmp_path / "config.yaml")
+
+    def fake_daily(**_: object) -> SimpleNamespace:
+        calls.append("daily")
+        return SimpleNamespace(
+            status_path=tmp_path / "live" / "latest_run_status.json",
+            log_path=tmp_path / "live" / "daily_run_log.csv",
+            status={"status": "ok", "steps": {"risk_policy_dashboard": {"status": "ok"}}},
+        )
+
+    def fake_ledger(**_: object) -> SimpleNamespace:
+        calls.append("ledger")
+        latest_row = {
+            "status": "ok",
+            "target_exposure": 1.2,
+            "paper_equity": 101000.0,
+            "relative_equity_vs_tqqq": 1.01,
+        }
+        return SimpleNamespace(
+            latest_status="ok",
+            latest_row=latest_row,
+            ledger_path=tmp_path / "auto" / "auto_paper_ledger.csv",
+            summary_path=tmp_path / "auto" / "auto_paper_summary.csv",
+            report_path=tmp_path / "auto" / "auto_paper_report.md",
+        )
+
+    def fake_drift(**_: object) -> SimpleNamespace:
+        calls.append("drift")
+        return SimpleNamespace(
+            summary_path=tmp_path / "drift" / "execution_drift_summary.csv",
+            report_path=tmp_path / "drift" / "execution_drift_report.md",
+            metrics={"drift_exceeds_policy_threshold": False},
+        )
+
+    def fake_health(**_: object) -> SimpleNamespace:
+        calls.append("health")
+        return SimpleNamespace(
+            overall_status="ok",
+            summary_path=tmp_path / "live" / "monitor_health_summary.csv",
+            report_path=tmp_path / "live" / "monitor_health_report.md",
+        )
+
+    monkeypatch.setattr(voltarget_daily_monitor, "run_daily_voltarget_monitor", fake_daily)
+    monkeypatch.setattr(voltarget_daily_monitor, "update_auto_paper_ledger", fake_ledger)
+    monkeypatch.setattr(voltarget_daily_monitor, "run_execution_drift_tracking", fake_drift)
+    monkeypatch.setattr(voltarget_daily_monitor, "check_voltarget_monitor_health", fake_health)
+
+    result = run_automated_voltarget_paper_monitor(config_path=config, signal_dir=tmp_path / "live")
+
+    assert result.status["status"] == "ok"
+    assert calls == ["daily", "ledger", "drift", "health"]
+    assert result.status_path.exists()
+    assert result.log_path.exists()
 
 
 def test_no_generated_automation_files_are_committed() -> None:

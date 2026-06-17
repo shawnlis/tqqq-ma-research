@@ -7,6 +7,8 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
+from .voltarget_live_monitor import load_monitor_config
+
 
 FORBIDDEN_AUTOMATION_TOKENS = (
     "broker_api",
@@ -97,7 +99,9 @@ def _write_report(path: Path, summary: pd.DataFrame, overall_status: str) -> Non
 def check_voltarget_monitor_health(
     *,
     output_dir: Path,
+    config_path: Path = Path("configs/voltarget_live_monitor.yaml"),
     ledger_path: Path = Path("data/paper_trading/voltarget_paper_trades.csv"),
+    auto_paper_ledger_dir: Path = Path("outputs/auto_paper_ledger"),
     execution_drift_dir: Path = Path("outputs/execution_drift"),
     paper_reconciliation_dir: Path = Path("outputs/paper_reconciliation"),
     repo_root: Path = Path("."),
@@ -105,6 +109,12 @@ def check_voltarget_monitor_health(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows: List[Dict[str, object]] = []
+    if Path(config_path).exists():
+        config = load_monitor_config(Path(config_path))
+    else:
+        config = {"auto_paper_ledger_enabled": False, "manual_ledger_required": True}
+    auto_ledger_enabled = bool(config.get("auto_paper_ledger_enabled", False))
+    manual_ledger_required = bool(config.get("manual_ledger_required", True))
 
     signal_path = output_dir / "signal_today.json"
     if signal_path.exists():
@@ -151,16 +161,53 @@ def check_voltarget_monitor_health(
     else:
         _add(rows, "financing_report_status", "warning", f"missing {financing_report} or {financing_history}")
 
-    ledger_path = Path(ledger_path)
-    reconciliation_report = Path(paper_reconciliation_dir) / "paper_trade_reconciliation_report.md"
-    reconciliation_csv = Path(paper_reconciliation_dir) / "paper_trade_reconciliation.csv"
-    if ledger_path.exists():
-        if reconciliation_report.exists() and reconciliation_csv.exists():
-            _add(rows, "ledger_reconciliation_status", "ok", str(reconciliation_report))
+    if auto_ledger_enabled and not manual_ledger_required:
+        auto_ledger_path = Path(auto_paper_ledger_dir) / "auto_paper_ledger.csv"
+        if auto_ledger_path.exists():
+            auto_ledger = pd.read_csv(auto_ledger_path)
+            if auto_ledger.empty:
+                _add(rows, "auto_paper_ledger_exists", "warning", f"empty {auto_ledger_path}")
+            else:
+                latest = auto_ledger.iloc[-1]
+                latest_status = str(latest.get("status", ""))
+                status = "ok" if latest_status == "ok" else "warning"
+                _add(rows, "auto_paper_ledger_exists", "ok", str(auto_ledger_path))
+                _add(rows, "auto_paper_latest_row_date", "ok", str(latest.get("signal_date", "")))
+                _add(rows, "auto_paper_latest_status", status, latest_status)
+                pending_count = int(auto_ledger["status"].astype(str).eq("pending_fill").sum())
+                stale_count = int(auto_ledger["status"].astype(str).eq("stale_data").sum())
+                failed_count = int(auto_ledger["status"].astype(str).eq("failed").sum())
+                _add(rows, "auto_paper_pending_fills", "warning" if pending_count else "ok", f"pending_fill_count={pending_count}")
+                _add(rows, "auto_paper_stale_data", "warning" if stale_count else "ok", f"stale_data_count={stale_count}")
+                _add(rows, "auto_paper_failed_rows", "failed" if failed_count else "ok", f"failed_count={failed_count}", hard_fail=bool(failed_count))
+                paper_equity = pd.to_numeric(auto_ledger.get("paper_equity"), errors="coerce")
+                relative = pd.to_numeric(auto_ledger.get("relative_equity_vs_tqqq"), errors="coerce")
+                _add(
+                    rows,
+                    "auto_paper_equity_updated",
+                    "ok" if paper_equity.notna().any() else "warning",
+                    f"latest_paper_equity={latest.get('paper_equity', '')}",
+                )
+                _add(
+                    rows,
+                    "auto_paper_relative_equity_updated",
+                    "ok" if relative.notna().any() else "warning",
+                    f"latest_relative_equity_vs_tqqq={latest.get('relative_equity_vs_tqqq', '')}",
+                )
         else:
-            _add(rows, "ledger_reconciliation_status", "warning", "ledger exists but reconciliation output is missing")
+            _add(rows, "auto_paper_ledger_exists", "warning", f"missing {auto_ledger_path}")
+        _add(rows, "ledger_reconciliation_status", "ok", "manual ledger not required in auto paper ledger mode")
     else:
-        _add(rows, "ledger_reconciliation_status", "warning", f"ledger missing: {ledger_path}")
+        ledger_path = Path(ledger_path)
+        reconciliation_report = Path(paper_reconciliation_dir) / "paper_trade_reconciliation_report.md"
+        reconciliation_csv = Path(paper_reconciliation_dir) / "paper_trade_reconciliation.csv"
+        if ledger_path.exists():
+            if reconciliation_report.exists() and reconciliation_csv.exists():
+                _add(rows, "ledger_reconciliation_status", "ok", str(reconciliation_report))
+            else:
+                _add(rows, "ledger_reconciliation_status", "warning", "ledger exists but reconciliation output is missing")
+        else:
+            _add(rows, "ledger_reconciliation_status", "warning", f"ledger missing: {ledger_path}")
 
     repo_root = Path(repo_root)
     hits = _scan_forbidden_tokens([repo_root / "research", repo_root / "scripts", repo_root / "automation"])

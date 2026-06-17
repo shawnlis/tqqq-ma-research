@@ -7,7 +7,6 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $LogDir = Join-Path $RepoRoot "logs\voltarget_monitor"
 $SignalDir = Join-Path $RepoRoot "outputs\live_signal"
 $StatusPath = Join-Path $SignalDir "latest_automation_status.json"
-$LedgerPath = Join-Path $RepoRoot "data\paper_trading\voltarget_paper_trades.csv"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SignalDir | Out-Null
@@ -79,32 +78,10 @@ try {
     Write-Log "PAPER MONITORING ONLY. NO AUTO-TRADING. NO BROKER API CALLS."
     Write-Log "RepoRoot=$RepoRoot"
 
-    Invoke-MonitorStep -Name "daily_monitor" -Arguments @(
-        "-m", "research.cli", "run-daily-voltarget-monitor",
+    Invoke-MonitorStep -Name "automated_paper_monitor" -Arguments @(
+        "-m", "research.cli", "run-automated-voltarget-paper-monitor",
         "--config", "configs\voltarget_live_monitor.yaml"
     ) -Required $true
-
-    Invoke-MonitorStep -Name "execution_drift" -Arguments @(
-        "-m", "research.cli", "track-execution-drift",
-        "--config", "configs\voltarget_live_monitor.yaml",
-        "--signal-dir", "outputs\live_signal",
-        "--output-dir", "outputs\execution_drift"
-    ) -Required $true
-
-    Write-Log "Financing update is part of run-daily-voltarget-monitor/generate-voltarget-signal."
-    Add-Step -Name "financing_update" -Status "included" -Detail "financing_cost_history.csv and financing_cost_report.md are written by the daily monitor"
-
-    if (Test-Path -LiteralPath $LedgerPath) {
-        Invoke-MonitorStep -Name "paper_trade_reconciliation" -Arguments @(
-            "-m", "research.cli", "reconcile-paper-trades",
-            "--signal-dir", "outputs\live_signal",
-            "--ledger", "data\paper_trading\voltarget_paper_trades.csv",
-            "--output-dir", "outputs\paper_reconciliation"
-        ) -Required $true
-    } else {
-        Write-Log "WARNING ledger missing: $LedgerPath. Reconciliation skipped without hard failure."
-        Add-Step -Name "paper_trade_reconciliation" -Status "warning" -Detail "ledger missing; skipped"
-    }
 
     Write-Status -Status "ok" -Message "Daily VolTarget paper monitor completed."
     exit 0

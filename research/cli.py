@@ -49,6 +49,7 @@ from .voltarget_simplification_battle import run_simplification_battle
 from .voltarget_execution_semantics import run_execution_semantics_audit
 from .voltarget_daily_monitor import run_daily_voltarget_monitor
 from .voltarget_live_monitor import generate_voltarget_signal
+from .voltarget_monitor_health import check_voltarget_monitor_health
 from .voltarget_risk_dashboard import build_voltarget_risk_dashboard
 from .voltarget_timing_audit import audit_voltarget_timing
 from .voltarget_stage import summarize_voltarget_stage
@@ -733,6 +734,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.01,
         help="Absolute drift threshold used for policy-threshold warnings.",
     )
+    health_check = subparsers.add_parser(
+        "check-voltarget-monitor-health",
+        help="Run read-only health checks for the VolTarget paper monitor outputs.",
+    )
+    health_check.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory containing live signal outputs and receiving health-check artifacts.",
+    )
     run_open_questions = subparsers.add_parser(
         "run-open-questions",
         help="Run the OpenQuestionsExperimentPack diagnostic experiments.",
@@ -1177,6 +1187,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
+    if command == "check-voltarget-monitor-health":
+        result = check_voltarget_monitor_health(output_dir=Path(args.output_dir))
+        print(f"Wrote monitor health summary: {result.summary_path}")
+        print(f"Wrote monitor health report: {result.report_path}")
+        print(f"Monitor health status: {result.overall_status}")
+        return 1 if result.overall_status == "failed" else 0
     if command == "run-open-questions":
         run_open_questions_config(
             Path(args.pack_path),

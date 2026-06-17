@@ -1,0 +1,43 @@
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$DailyTaskName = "VolTarget Paper Monitor Daily"
+$WeeklyTaskName = "VolTarget Paper Monitor Weekly"
+$DailyXml = Join-Path $RepoRoot "automation\windows_task_voltarget_daily.xml"
+$WeeklyXml = Join-Path $RepoRoot "automation\windows_task_voltarget_weekly.xml"
+
+Write-Host "PAPER MONITORING ONLY. NO AUTO-TRADING."
+Write-Host "This helper is a template. Copy it to .ps1 only after reviewing paths and XML files."
+Write-Host ""
+Write-Host "Expected XML files after copying/editing templates:"
+Write-Host "  $DailyXml"
+Write-Host "  $WeeklyXml"
+Write-Host ""
+Write-Host "Exact commands:"
+Write-Host "schtasks /Create /TN `"$DailyTaskName`" /XML `"$DailyXml`" /F"
+Write-Host "schtasks /Create /TN `"$WeeklyTaskName`" /XML `"$WeeklyXml`" /F"
+Write-Host ""
+Write-Host "Disable commands:"
+Write-Host "schtasks /Change /TN `"$DailyTaskName`" /DISABLE"
+Write-Host "schtasks /Change /TN `"$WeeklyTaskName`" /DISABLE"
+Write-Host ""
+
+$Confirm = Read-Host "Type CREATE to create these local Windows Scheduled Tasks"
+if ($Confirm -ne "CREATE") {
+    Write-Host "No tasks created."
+    exit 0
+}
+
+if (-not (Test-Path -LiteralPath $DailyXml)) {
+    throw "Missing reviewed daily XML file: $DailyXml"
+}
+if (-not (Test-Path -LiteralPath $WeeklyXml)) {
+    throw "Missing reviewed weekly XML file: $WeeklyXml"
+}
+
+schtasks /Create /TN "$DailyTaskName" /XML "$DailyXml" /F
+schtasks /Create /TN "$WeeklyTaskName" /XML "$WeeklyXml" /F
+Write-Host "Created paper-monitor tasks. Review Task Scheduler history after the first manual run."

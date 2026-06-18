@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .data import load_prices
-from .auto_paper_ledger import update_auto_paper_ledger
+from .auto_paper_ledger import initialize_auto_paper_ledger, update_auto_paper_ledger
 from .baseline_gate import accept_baseline_regression, check_blockers, create_baseline_regression_report
 from .experiments import ExperimentInfrastructureError, dry_run_experiment_config, run_batch_config, run_experiment_config
 from .execution_drift import run_execution_drift_tracking
@@ -710,6 +710,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-csv",
         help="Optional fixture CSV with Date and adjusted OHLC columns.",
     )
+    init_auto_paper_ledger = subparsers.add_parser(
+        "initialize-auto-paper-ledger",
+        help="Initialize the live automated VolTarget paper ledger state without broker or order actions.",
+    )
+    init_auto_paper_ledger.add_argument("--config", required=True, help="Path to voltarget_live_monitor.yaml.")
+    init_auto_paper_ledger.add_argument("--start-date", required=True, help="Live paper ledger start date, YYYY-MM-DD.")
+    init_auto_paper_ledger.add_argument("--starting-equity", type=float, required=True, help="Starting paper equity.")
+    init_auto_paper_ledger.add_argument("--output-dir", default="outputs/auto_paper_ledger", help="Auto paper ledger output directory.")
+    init_auto_paper_ledger.add_argument(
+        "--confirm-reset",
+        action="store_true",
+        help="Create/reset auto_paper_ledger.csv. Without this, only the state file is written unless no ledger exists.",
+    )
     automated_voltarget_monitor = subparsers.add_parser(
         "run-automated-voltarget-paper-monitor",
         help="Run the full paper-monitor workflow with automated ledger, drift tracking, financing, dashboard, and health checks.",
@@ -1213,6 +1226,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Latest target exposure: {result.latest_row.get('target_exposure', '')}")
             print(f"Latest paper equity: {result.latest_row.get('paper_equity', '')}")
             print(f"Latest relative equity vs TQQQ: {result.latest_row.get('relative_equity_vs_tqqq', '')}")
+            return 0
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if command == "initialize-auto-paper-ledger":
+        try:
+            result = initialize_auto_paper_ledger(
+                config_path=Path(args.config),
+                start_date=args.start_date,
+                starting_equity=float(args.starting_equity),
+                output_dir=Path(args.output_dir),
+                confirm_reset=bool(args.confirm_reset),
+            )
+            print(f"Wrote auto paper ledger state: {result.state_path}")
+            print(f"Auto paper ledger path: {result.ledger_path}")
+            print(f"Reset performed: {result.reset_performed}")
+            print(f"Paper ledger start date: {result.state['paper_ledger_start_date']}")
+            print(f"Starting equity: {result.state['starting_equity']}")
             return 0
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

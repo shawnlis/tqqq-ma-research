@@ -144,6 +144,14 @@ def check_voltarget_monitor_health(
         status_value = str(run_status.get("status", ""))
         status = "ok" if status_value == "ok" else "warning"
         _add(rows, "latest_run_status", status, status_value)
+        refresh = run_status.get("steps", {}).get("market_data_refresh", {}) if isinstance(run_status.get("steps"), dict) else {}
+        if isinstance(refresh, dict) and refresh:
+            refresh_status = str(refresh.get("status", ""))
+            _add(rows, "data_freshness_status", "ok" if refresh_status == "ok" else "warning", refresh_status)
+            _add(rows, "last_refresh_attempt", "ok", str(refresh.get("generated_at", "")))
+            _add(rows, "refresh_success", "ok" if bool(refresh.get("refresh_success", False)) else "warning", str(refresh.get("refresh_success", False)))
+            _add(rows, "latest_price_date", "ok", str(refresh.get("latest_price_date", "")))
+            _add(rows, "stale_days", "ok" if refresh_status == "ok" else "warning", str(refresh.get("stale_days", "")))
     else:
         _add(rows, "latest_run_status", "warning", f"missing {run_status_path}")
 
@@ -163,12 +171,33 @@ def check_voltarget_monitor_health(
 
     if auto_ledger_enabled and not manual_ledger_required:
         auto_ledger_path = Path(auto_paper_ledger_dir) / "auto_paper_ledger.csv"
+        auto_state_path = Path(auto_paper_ledger_dir) / "auto_paper_ledger_state.json"
+        state = _read_json(auto_state_path) if auto_state_path.exists() else {}
+        configured_start = str(config.get("paper_ledger_start_date") or "")
+        state_start = str(state.get("paper_ledger_start_date", "") or "")
+        start_date = state_start or configured_start
+        allow_backfill = bool(config.get("paper_ledger_allow_historical_backfill", True))
+        _add(rows, "auto_paper_ledger_mode", "ok", str(config.get("paper_ledger_start_mode", "")))
+        _add(
+            rows,
+            "paper_ledger_start_date",
+            "ok" if start_date or allow_backfill else "warning",
+            start_date or ("historical_backfill_allowed" if allow_backfill else "missing"),
+        )
+        _add(
+            rows,
+            "live_ledger_initialized",
+            "ok" if bool(state_start) or allow_backfill else "warning",
+            str(bool(state_start) or allow_backfill),
+        )
         if auto_ledger_path.exists():
             auto_ledger = pd.read_csv(auto_ledger_path)
             if auto_ledger.empty:
                 _add(rows, "auto_paper_ledger_exists", "warning", f"empty {auto_ledger_path}")
             else:
                 latest = auto_ledger.iloc[-1]
+                ledger_kind = str(latest.get("ledger_mode", "historical_backfill" if latest.get("historical_backfill", False) else "live_monitor"))
+                _add(rows, "current_ledger_kind", "ok" if ledger_kind == "live_monitor" else "warning", ledger_kind)
                 latest_status = str(latest.get("status", ""))
                 status = "ok" if latest_status == "ok" else "warning"
                 _add(rows, "auto_paper_ledger_exists", "ok", str(auto_ledger_path))

@@ -57,6 +57,10 @@ def load_monitor_config(config_path: Path) -> Dict[str, Any]:
     config = dict(data)
     config["input_dir"] = str(config["input_dir"])
     config["cache_dir"] = str(config.get("cache_dir", "./price_cache"))
+    config["auto_refresh_market_data"] = bool(config.get("auto_refresh_market_data", False))
+    config["refresh_lookback_days"] = int(config.get("refresh_lookback_days", 10))
+    config["fail_on_stale_data"] = bool(config.get("fail_on_stale_data", False))
+    config["stale_data_blocks_new_signal"] = bool(config.get("stale_data_blocks_new_signal", False))
     config["execution_assumption"] = normalize_execution_model(config.get("execution_assumption", NEXT_OPEN_TO_NEXT_OPEN))
     config["transaction_cost_bps"] = float(config["transaction_cost_bps"])
     config["slippage_bps"] = float(config.get("slippage_bps", 0.0))
@@ -86,6 +90,11 @@ def load_monitor_config(config_path: Path) -> Dict[str, Any]:
     )
     config["auto_paper_ledger_enabled"] = bool(config.get("auto_paper_ledger_enabled", False))
     config["manual_ledger_required"] = bool(config.get("manual_ledger_required", True))
+    config["paper_ledger_start_mode"] = str(config.get("paper_ledger_start_mode", "historical_backfill")).lower()
+    start_date = config.get("paper_ledger_start_date")
+    config["paper_ledger_start_date"] = None if start_date in {None, ""} else str(start_date)
+    config["paper_ledger_allow_historical_backfill"] = bool(config.get("paper_ledger_allow_historical_backfill", True))
+    config["paper_ledger_reset_allowed"] = bool(config.get("paper_ledger_reset_allowed", False))
     return config
 
 

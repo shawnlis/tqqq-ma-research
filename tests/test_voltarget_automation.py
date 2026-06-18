@@ -93,6 +93,9 @@ def _write_auto_config(path: Path) -> Path:
                 "paper_trading_only": True,
                 "auto_paper_ledger_enabled": True,
                 "manual_ledger_required": False,
+                "paper_ledger_start_mode": "historical_backfill",
+                "paper_ledger_allow_historical_backfill": True,
+                "paper_ledger_reset_allowed": False,
             }
         ),
         encoding="utf-8",
@@ -100,7 +103,7 @@ def _write_auto_config(path: Path) -> Path:
     return path
 
 
-def _write_auto_ledger(output_dir: Path, *, status: str = "ok") -> None:
+def _write_auto_ledger(output_dir: Path, *, status: str = "ok", ledger_mode: str = "historical_backfill") -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
@@ -111,6 +114,10 @@ def _write_auto_ledger(output_dir: Path, *, status: str = "ok") -> None:
                 "target_exposure": 1.1,
                 "paper_equity": 100500.0,
                 "relative_equity_vs_tqqq": 1.01,
+                "ledger_mode": ledger_mode,
+                "paper_ledger_start_date": "2026-06-12" if ledger_mode == "live_monitor" else "",
+                "historical_backfill": ledger_mode == "historical_backfill",
+                "live_ledger_initialized": ledger_mode == "live_monitor",
                 "paper_trading_only": True,
                 "no_broker_integration": True,
                 "no_auto_trading": True,
@@ -189,8 +196,16 @@ def test_health_check_warns_if_ledger_missing_without_hard_fail(tmp_path: Path) 
 def test_health_check_does_not_warn_on_missing_manual_ledger_in_auto_mode(tmp_path: Path) -> None:
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path, ledger_exists=False)
     config = _write_auto_config(tmp_path / "config.yaml")
+    config_data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    config_data["paper_ledger_start_mode"] = "live_from_config_date"
+    config_data["paper_ledger_allow_historical_backfill"] = False
+    config.write_text(yaml.safe_dump(config_data), encoding="utf-8")
     auto_dir = tmp_path / "outputs" / "auto_paper_ledger"
-    _write_auto_ledger(auto_dir)
+    _write_auto_ledger(auto_dir, ledger_mode="live_monitor")
+    (auto_dir / "auto_paper_ledger_state.json").write_text(
+        json.dumps({"ledger_mode": "live_monitor", "paper_ledger_start_date": "2026-06-12", "starting_equity": 100000}),
+        encoding="utf-8",
+    )
 
     result = check_voltarget_monitor_health(
         output_dir=live,
@@ -225,6 +240,46 @@ def test_health_check_warns_if_auto_paper_ledger_is_stale(tmp_path: Path) -> Non
 
     row = result.summary.set_index("check").loc["auto_paper_latest_status"]
     assert result.overall_status == "warning"
+    assert row["status"] == "warning"
+
+
+def test_health_check_distinguishes_live_monitor_from_historical_backfill(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
+    config = _write_auto_config(tmp_path / "config.yaml")
+    config_data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    config_data["paper_ledger_start_mode"] = "live_from_config_date"
+    config_data["paper_ledger_allow_historical_backfill"] = False
+    config.write_text(yaml.safe_dump(config_data), encoding="utf-8")
+    auto_dir = tmp_path / "outputs" / "auto_paper_ledger"
+    _write_auto_ledger(auto_dir, ledger_mode="live_monitor")
+    (auto_dir / "auto_paper_ledger_state.json").write_text(
+        json.dumps({"ledger_mode": "live_monitor", "paper_ledger_start_date": "2026-06-12", "starting_equity": 100000}),
+        encoding="utf-8",
+    )
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=config,
+        auto_paper_ledger_dir=auto_dir,
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+    by_check = result.summary.set_index("check")
+    assert by_check.loc["current_ledger_kind", "detail"] == "live_monitor"
+    assert by_check.loc["live_ledger_initialized", "status"] == "ok"
+
+    _write_auto_ledger(auto_dir, ledger_mode="historical_backfill")
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=config,
+        auto_paper_ledger_dir=auto_dir,
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+    row = result.summary.set_index("check").loc["current_ledger_kind"]
+    assert row["detail"] == "historical_backfill"
     assert row["status"] == "warning"
 
 

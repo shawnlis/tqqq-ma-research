@@ -16,14 +16,42 @@ python -m research.cli run-automated-voltarget-paper-monitor --config configs\vo
 The command runs:
 
 1. Data freshness check.
-2. VolTarget signal generation.
-3. Automated paper ledger update.
-4. Execution drift tracking.
-5. Financing tracking through the signal monitor.
-6. Risk dashboard refresh.
-7. Health check.
-8. `outputs/live_signal/latest_automation_status.json` update.
-9. `outputs/live_signal/daily_run_log.csv` update.
+2. Recent TQQQ/QQQ OHLC refresh and cache merge.
+3. VolTarget signal generation, only when data is fresh enough.
+4. Automated paper ledger update.
+5. Execution drift tracking.
+6. Financing tracking through the signal monitor.
+7. Risk dashboard refresh.
+8. Health check.
+9. `outputs/live_signal/latest_automation_status.json` update.
+10. `outputs/live_signal/daily_run_log.csv` update.
+
+If data remains stale after refresh and `stale_data_blocks_new_signal: true`, no new accepted signal is generated. The previous `signal_today.json` and `signal_history.csv` are left unchanged, and the workflow exits 0 with warning unless `fail_on_stale_data: true`.
+
+## Initialize Live Paper Ledger
+
+The default config does not allow historical backfill:
+
+```yaml
+paper_ledger_start_mode: live_from_config_date
+paper_ledger_allow_historical_backfill: false
+paper_ledger_start_date:
+```
+
+Before unattended use, initialize the live ledger:
+
+```powershell
+python -m research.cli initialize-auto-paper-ledger --config configs\voltarget_live_monitor.yaml --start-date YYYY-MM-DD --starting-equity 100000 --output-dir outputs\auto_paper_ledger --confirm-reset
+```
+
+This writes local generated state under:
+
+```text
+outputs/auto_paper_ledger/auto_paper_ledger_state.json
+outputs/auto_paper_ledger/auto_paper_ledger.csv
+```
+
+Without `--confirm-reset`, the command refuses to reset an existing ledger.
 
 ## Auto Paper Fill Assumption
 
@@ -37,6 +65,8 @@ For each signal date, the default fill is the next available TQQQ open. The ledg
 
 No real order is created. No broker account is read or written.
 
+Historical backfill remains available only if `paper_ledger_allow_historical_backfill: true`. Do not enable it for live unattended paper monitoring.
+
 ## Status Meanings
 
 - `ok`: the signal has an observable paper fill.
@@ -44,6 +74,8 @@ No real order is created. No broker account is read or written.
 - `stale_data`: the latest signal was flagged stale by the signal monitor.
 - `missing_price_data`: required OHLC data was not available.
 - `duplicate_skipped`: duplicate signal dates were ignored during ledger normalization.
+- `initialized`: live ledger state exists, but no eligible live signal has been processed yet.
+- `needs_start_date`: live ledger mode is enabled but no start date or initialized state exists.
 - `failed`: the ledger update failed.
 
 `pending_fill` is expected when the signal exists but the next trading session open is not yet available. Rerun the one-command workflow after the next open data appears.
@@ -88,7 +120,11 @@ Import-Csv outputs\auto_paper_ledger\auto_paper_ledger.csv | Select-Object -Last
 Check:
 
 - latest automation status
+- latest refresh attempt and refresh success
+- latest price date and stale days
 - latest auto paper ledger status
+- whether the ledger is `live_monitor` or `historical_backfill`
+- whether the live ledger is initialized
 - latest target exposure
 - latest paper equity
 - latest relative equity versus TQQQ

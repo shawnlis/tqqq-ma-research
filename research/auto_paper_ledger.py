@@ -25,8 +25,12 @@ LEDGER_STATUSES = (
     "stale_data",
     "missing_price_data",
     "duplicate_skipped",
+    "initialized",
+    "needs_start_date",
     "failed",
 )
+
+STATE_FILENAME = "auto_paper_ledger_state.json"
 
 
 @dataclass(frozen=True)
@@ -42,11 +46,24 @@ class AutoPaperLedgerResult:
     latest_row: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class AutoPaperLedgerInitResult:
+    output_dir: Path
+    state_path: Path
+    ledger_path: Path
+    state: Dict[str, Any]
+    reset_performed: bool
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _safe_float(value: Any, default: float = np.nan) -> float:
@@ -299,7 +316,53 @@ def _build_ledger(
     return pd.DataFrame(rows)
 
 
-def _summary(ledger: pd.DataFrame, *, duplicate_skipped: int) -> pd.DataFrame:
+def _empty_status_ledger(config: Dict[str, Any], status: str, start_date: str = "", starting_equity: Optional[float] = None) -> pd.DataFrame:
+    equity = float(starting_equity if starting_equity is not None else config.get("paper_starting_equity", 100000.0))
+    return pd.DataFrame(
+        [
+            {
+                "signal_date": start_date,
+                "execution_date": "",
+                "status": status,
+                "warning": "paper_ledger_start_date is required" if status == "needs_start_date" else "",
+                "symbol": str(config.get("target_symbol", "TQQQ")).upper(),
+                "target_exposure": 0.0,
+                "previous_target_exposure": 0.0,
+                "previous_actual_exposure": 0.0,
+                "trade_delta_exposure": 0.0,
+                "paper_execution_model": str(config.get("paper_execution_model", "next_open_to_next_open")),
+                "fill_price_source": str(config.get("paper_fill_price_source", "next_open")),
+                "fallback_fill_price_source": str(config.get("fallback_fill_price_source", "latest_close")),
+                "reference_close": np.nan,
+                "raw_fill_price": np.nan,
+                "effective_fill_price": np.nan,
+                "fallback_price": np.nan,
+                "paper_shares": 0.0,
+                "paper_cash": equity,
+                "paper_equity": equity,
+                "target_notional": 0.0,
+                "trade_shares": 0.0,
+                "trade_notional": 0.0,
+                "slippage_cost": 0.0,
+                "transaction_cost": 0.0,
+                "financing_cost": 0.0,
+                "benchmark_symbol": str(config.get("benchmark_symbol", "TQQQ")).upper(),
+                "benchmark_price": np.nan,
+                "tqqq_buy_hold_equity": equity,
+                "relative_equity_vs_tqqq": 1.0,
+                "ledger_mode": "live_monitor",
+                "paper_ledger_start_date": start_date,
+                "historical_backfill": False,
+                "live_ledger_initialized": status == "initialized",
+                "paper_trading_only": True,
+                "no_broker_integration": True,
+                "no_auto_trading": True,
+            }
+        ]
+    )
+
+
+def _summary(ledger: pd.DataFrame, *, duplicate_skipped: int, ledger_mode: str, start_date: str, initialized: bool) -> pd.DataFrame:
     latest = ledger.iloc[-1].to_dict() if not ledger.empty else {}
     return pd.DataFrame(
         [
@@ -316,6 +379,11 @@ def _summary(ledger: pd.DataFrame, *, duplicate_skipped: int) -> pd.DataFrame:
                 "stale_data_count": int(ledger["status"].eq("stale_data").sum()) if not ledger.empty else 0,
                 "missing_price_data_count": int(ledger["status"].eq("missing_price_data").sum()) if not ledger.empty else 0,
                 "duplicate_skipped_count": int(duplicate_skipped),
+                "auto_paper_ledger_mode": ledger_mode,
+                "paper_ledger_start_date": start_date,
+                "current_ledger_kind": latest.get("ledger_mode", ledger_mode),
+                "historical_backfill": bool(latest.get("historical_backfill", ledger_mode == "historical_backfill")),
+                "live_ledger_initialized": bool(initialized),
                 "paper_trading_only": True,
                 "no_broker_integration": True,
                 "no_auto_trading": True,
@@ -360,6 +428,10 @@ def _write_report(path: Path, summary: pd.DataFrame, chart_paths: Dict[str, Path
         f"- Latest target exposure: `{latest['latest_target_exposure']}`",
         f"- Latest paper equity: `{latest['latest_paper_equity']}`",
         f"- Latest relative equity vs TQQQ: `{latest['latest_relative_equity_vs_tqqq']}`",
+        f"- Auto paper ledger mode: `{latest['auto_paper_ledger_mode']}`",
+        f"- Paper ledger start date: `{latest['paper_ledger_start_date']}`",
+        f"- Current ledger kind: `{latest['current_ledger_kind']}`",
+        f"- Live ledger initialized: `{latest['live_ledger_initialized']}`",
         f"- Pending fills: `{latest['pending_fill_count']}`",
         f"- Stale data rows: `{latest['stale_data_count']}`",
         "",
@@ -393,18 +465,69 @@ def update_auto_paper_ledger(
     signal_dir = Path(signal_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    state = _read_json(output_dir / STATE_FILENAME)
+    allow_backfill = bool(config.get("paper_ledger_allow_historical_backfill", True))
+    state_start_date = str(state.get("paper_ledger_start_date", "") or "")
+    config_start_date = str(config.get("paper_ledger_start_date") or "")
+    start_date = state_start_date or config_start_date
+    initialized = bool(state.get("ledger_mode") == "live_monitor" and state_start_date)
+    if state.get("starting_equity") not in {None, ""}:
+        config["paper_starting_equity"] = float(state["starting_equity"])
+    ledger_mode = "historical_backfill" if allow_backfill else "live_monitor"
+
+    if not allow_backfill and not start_date:
+        ledger = _empty_status_ledger(config, "needs_start_date")
+        ledger_path = output_dir / "auto_paper_ledger.csv"
+        summary_path = output_dir / "auto_paper_summary.csv"
+        report_path = output_dir / "auto_paper_report.md"
+        ledger.to_csv(ledger_path, index=False)
+        summary = _summary(ledger, duplicate_skipped=0, ledger_mode=ledger_mode, start_date="", initialized=False)
+        summary.to_csv(summary_path, index=False)
+        chart_paths = {
+            "paper_equity_vs_tqqq": _write_chart(ledger, output_dir, "paper_equity_vs_tqqq.png", ["paper_equity", "tqqq_buy_hold_equity"], "Auto Paper Equity vs TQQQ", "Equity"),
+            "relative_equity_vs_tqqq": _write_chart(ledger, output_dir, "relative_equity_vs_tqqq.png", ["relative_equity_vs_tqqq"], "Auto Paper Relative Equity vs TQQQ", "Relative equity"),
+            "paper_exposure_history": _write_chart(ledger, output_dir, "paper_exposure_history.png", ["target_exposure"], "Auto Paper Exposure History", "Exposure"),
+            "paper_trade_delta_history": _write_chart(ledger, output_dir, "paper_trade_delta_history.png", ["trade_delta_exposure"], "Auto Paper Trade Delta History", "Exposure delta"),
+        }
+        _write_report(report_path, summary, chart_paths, ledger_path)
+        latest_row = ledger.iloc[-1].to_dict()
+        return AutoPaperLedgerResult(output_dir, ledger_path, summary_path, report_path, chart_paths, ledger, summary, "needs_start_date", latest_row)
+
     signal_today = _read_json(signal_dir / "signal_today.json")
     raw_signals = pd.read_csv(signal_dir / "signal_history.csv") if (signal_dir / "signal_history.csv").exists() else pd.DataFrame()
     signals = _read_signal_history(signal_dir)
+    if not allow_backfill:
+        signals = signals.loc[signals["signal_date"] >= pd.Timestamp(start_date)].reset_index(drop=True)
+        if signals.empty:
+            ledger = _empty_status_ledger(config, "initialized", start_date=start_date, starting_equity=float(config["paper_starting_equity"]))
+            ledger_path = output_dir / "auto_paper_ledger.csv"
+            summary_path = output_dir / "auto_paper_summary.csv"
+            report_path = output_dir / "auto_paper_report.md"
+            ledger.to_csv(ledger_path, index=False)
+            summary = _summary(ledger, duplicate_skipped=0, ledger_mode=ledger_mode, start_date=start_date, initialized=initialized)
+            summary.to_csv(summary_path, index=False)
+            chart_paths = {
+                "paper_equity_vs_tqqq": _write_chart(ledger, output_dir, "paper_equity_vs_tqqq.png", ["paper_equity", "tqqq_buy_hold_equity"], "Auto Paper Equity vs TQQQ", "Equity"),
+                "relative_equity_vs_tqqq": _write_chart(ledger, output_dir, "relative_equity_vs_tqqq.png", ["relative_equity_vs_tqqq"], "Auto Paper Relative Equity vs TQQQ", "Relative equity"),
+                "paper_exposure_history": _write_chart(ledger, output_dir, "paper_exposure_history.png", ["target_exposure"], "Auto Paper Exposure History", "Exposure"),
+                "paper_trade_delta_history": _write_chart(ledger, output_dir, "paper_trade_delta_history.png", ["trade_delta_exposure"], "Auto Paper Trade Delta History", "Exposure delta"),
+            }
+            _write_report(report_path, summary, chart_paths, ledger_path)
+            latest_row = ledger.iloc[-1].to_dict()
+            return AutoPaperLedgerResult(output_dir, ledger_path, summary_path, report_path, chart_paths, ledger, summary, "initialized", latest_row)
     duplicate_skipped = max(int(len(raw_signals) - len(signals)), 0)
     prices = _load_price_frame(config=config, signals=signals, data_csv=data_csv)
     ledger = _build_ledger(config=config, signals=signals, prices=prices, signal_today=signal_today)
+    ledger["ledger_mode"] = ledger_mode
+    ledger["paper_ledger_start_date"] = start_date
+    ledger["historical_backfill"] = bool(allow_backfill)
+    ledger["live_ledger_initialized"] = bool(initialized or allow_backfill)
 
     ledger_path = output_dir / "auto_paper_ledger.csv"
     summary_path = output_dir / "auto_paper_summary.csv"
     report_path = output_dir / "auto_paper_report.md"
     ledger.to_csv(ledger_path, index=False)
-    summary = _summary(ledger, duplicate_skipped=duplicate_skipped)
+    summary = _summary(ledger, duplicate_skipped=duplicate_skipped, ledger_mode=ledger_mode, start_date=start_date, initialized=bool(initialized or allow_backfill))
     summary.to_csv(summary_path, index=False)
     chart_paths = {
         "paper_equity_vs_tqqq": _write_chart(
@@ -452,4 +575,49 @@ def update_auto_paper_ledger(
         summary=summary,
         latest_status=str(latest_row.get("status", "failed")),
         latest_row=latest_row,
+    )
+
+
+def initialize_auto_paper_ledger(
+    *,
+    config_path: Path,
+    start_date: str,
+    starting_equity: float,
+    output_dir: Path,
+    confirm_reset: bool = False,
+) -> AutoPaperLedgerInitResult:
+    config = load_monitor_config(config_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_path = output_dir / STATE_FILENAME
+    ledger_path = output_dir / "auto_paper_ledger.csv"
+    if ledger_path.exists() and not confirm_reset:
+        raise ValueError("auto_paper_ledger.csv exists; pass --confirm-reset to create/reset it")
+    state = {
+        "initialized_at": datetime.now(timezone.utc).isoformat(),
+        "ledger_mode": "live_monitor",
+        "paper_ledger_start_date": pd.Timestamp(start_date).date().isoformat(),
+        "starting_equity": float(starting_equity),
+        "historical_backfill": False,
+        "paper_trading_only": True,
+        "no_broker_integration": True,
+        "no_auto_trading": True,
+    }
+    _write_json(state_path, state)
+    reset_performed = False
+    if confirm_reset:
+        ledger = _empty_status_ledger(
+            config,
+            "initialized",
+            start_date=state["paper_ledger_start_date"],
+            starting_equity=float(starting_equity),
+        )
+        ledger.to_csv(ledger_path, index=False)
+        reset_performed = True
+    return AutoPaperLedgerInitResult(
+        output_dir=output_dir,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        state=state,
+        reset_performed=reset_performed,
     )

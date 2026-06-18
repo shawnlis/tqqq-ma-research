@@ -11,6 +11,7 @@ import pandas as pd
 from .data_snapshot import verify_data_snapshot
 from .auto_paper_ledger import update_auto_paper_ledger
 from .execution_drift import run_execution_drift_tracking
+from .market_data_refresh import refresh_recent_market_data
 from .visualization import generate_equity_visualizations
 from .voltarget_live_monitor import build_monitor_frame, generate_voltarget_signal, load_monitor_config
 from .voltarget_monitor_health import check_voltarget_monitor_health
@@ -64,6 +65,70 @@ def _append_daily_log(path: Path, row: Dict[str, Any]) -> pd.DataFrame:
 
 def _write_status(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _write_stale_signal_report(path: Path, refresh: Dict[str, Any], freshness: Dict[str, Any]) -> None:
+    lines = [
+        "# VolTarget Paper Signal Report",
+        "",
+        "**paper trading only**",
+        "",
+        "No new accepted signal was generated because market data remained stale after the refresh step.",
+        "",
+        "## Market Data Refresh",
+        f"- Refresh attempted: `{refresh.get('attempted', False)}`",
+        f"- Refresh success: `{refresh.get('refresh_success', False)}`",
+        f"- Data source: `{refresh.get('source', '')}`",
+        f"- Latest price date: `{refresh.get('latest_price_date', freshness.get('latest_price_date', ''))}`",
+        f"- Stale days: `{refresh.get('stale_days', freshness.get('stale_days', ''))}`",
+        f"- Max allowed stale days: `{refresh.get('max_allowed_stale_days', freshness.get('stale_warning_days', ''))}`",
+        f"- Refresh error: `{refresh.get('error', '')}`",
+        "",
+        "## Status",
+        "- Signal status: `stale_data`",
+        "- Accepted signal updated: `false`",
+        "- Previous `signal_today.json` and `signal_history.csv` were left unchanged.",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_data_quality(path: Path, refresh: Dict[str, Any], freshness: Dict[str, Any]) -> None:
+    pd.DataFrame(
+        [
+            {
+                "latest_price_date": refresh.get("latest_price_date", freshness.get("latest_price_date", "")),
+                "as_of_date": freshness.get("as_of_date", ""),
+                "stale_days": refresh.get("stale_days", freshness.get("stale_days", "")),
+                "stale_warning_days": refresh.get("max_allowed_stale_days", freshness.get("stale_warning_days", "")),
+                "status": "stale_data_warning",
+                "warning": freshness.get("warning", "latest data is stale"),
+                "refresh_attempted": refresh.get("attempted", False),
+                "refresh_success": refresh.get("refresh_success", False),
+                "refresh_source": refresh.get("source", ""),
+                "refresh_error": refresh.get("error", ""),
+            }
+        ]
+    ).to_csv(path, index=False)
+
+
+def _append_refresh_to_report(path: Path, refresh: Dict[str, Any]) -> None:
+    if not path.exists():
+        return
+    section = [
+        "",
+        "## Market Data Refresh",
+        f"- Refresh attempted: `{refresh.get('attempted', False)}`",
+        f"- Refresh success: `{refresh.get('refresh_success', False)}`",
+        f"- Data source: `{refresh.get('source', '')}`",
+        f"- Latest price date after refresh: `{refresh.get('latest_price_date', '')}`",
+        f"- Stale days after refresh: `{refresh.get('stale_days', '')}`",
+        f"- Max allowed stale days: `{refresh.get('max_allowed_stale_days', '')}`",
+        f"- Refresh error: `{refresh.get('error', '')}`",
+        "",
+    ]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(section))
 
 
 def check_monitor_data_freshness(
@@ -190,7 +255,16 @@ def run_daily_voltarget_monitor(
         risk_output_dir = Path(str(config.get("risk_dashboard_output_dir", effective_output_dir)))
         visualization_output_dir = Path(str(config.get("visualization_output_dir", DEFAULT_VISUALIZATION_OUTPUT_DIR)))
 
+        refresh = refresh_recent_market_data(config, data_csv=data_csv, as_of_date=as_of_date)
+        payload["steps"]["market_data_refresh"] = refresh.as_dict()
+
         freshness = check_monitor_data_freshness(config, data_csv=data_csv, as_of_date=as_of_date)
+        if refresh.status == "stale_data":
+            freshness["status"] = "warning"
+            freshness["latest_price_date"] = refresh.latest_price_date
+            freshness["stale_days"] = refresh.stale_days
+            freshness["stale_warning_days"] = refresh.max_allowed_stale_days
+            freshness["warning"] = f"latest data is {refresh.stale_days} calendar days old after refresh"
         payload["steps"]["data_freshness_check"] = freshness
 
         snapshot = _verify_snapshot_if_configured(config, data_csv=data_csv)
@@ -198,29 +272,55 @@ def run_daily_voltarget_monitor(
         if snapshot["status"] == "failed":
             raise ValueError("data snapshot verification failed")
 
-        signal_result = generate_voltarget_signal(
-            config_path=Path(config_path),
-            output_dir=effective_output_dir,
-            data_csv=data_csv,
-            signal_as_of_date=as_of_date,
-            generated_at=generated,
-        )
-        payload["steps"]["generate_voltarget_signal"] = {
-            "status": signal_result.signal_today.get("data_quality_status", "ok"),
-            "latest_price_date": signal_result.signal_today.get("latest_price_date", ""),
-            "signal_today": str(signal_result.signal_today_path),
-            "signal_history": str(signal_result.signal_history_path),
-            "signal_report": str(signal_result.signal_report_path),
-            "data_quality_report": str(signal_result.data_quality_path),
-        }
-        payload["outputs"].update(
-            {
+        block_stale = bool(config.get("stale_data_blocks_new_signal", False)) and freshness["status"] != "ok"
+        if block_stale:
+            data_quality_path = effective_output_dir / "data_quality_report.csv"
+            signal_report_path = effective_output_dir / "signal_report.md"
+            _write_data_quality(data_quality_path, refresh.as_dict(), freshness)
+            _write_stale_signal_report(signal_report_path, refresh.as_dict(), freshness)
+            payload["steps"]["generate_voltarget_signal"] = {
+                "status": "stale_data",
+                "accepted_signal": False,
+                "latest_price_date": freshness.get("latest_price_date", ""),
+                "signal_today": str(effective_output_dir / "signal_today.json"),
+                "signal_history": str(effective_output_dir / "signal_history.csv"),
+                "signal_report": str(signal_report_path),
+                "data_quality_report": str(data_quality_path),
+            }
+            payload["outputs"].update(
+                {
+                    "signal_report": str(signal_report_path),
+                    "data_quality_report": str(data_quality_path),
+                }
+            )
+            if bool(config.get("fail_on_stale_data", False)):
+                raise ValueError("market data remained stale after refresh")
+        else:
+            signal_result = generate_voltarget_signal(
+                config_path=Path(config_path),
+                output_dir=effective_output_dir,
+                data_csv=data_csv,
+                signal_as_of_date=as_of_date,
+                generated_at=generated,
+            )
+            _append_refresh_to_report(signal_result.signal_report_path, refresh.as_dict())
+            payload["steps"]["generate_voltarget_signal"] = {
+                "status": signal_result.signal_today.get("data_quality_status", "ok"),
+                "accepted_signal": True,
+                "latest_price_date": signal_result.signal_today.get("latest_price_date", ""),
                 "signal_today": str(signal_result.signal_today_path),
                 "signal_history": str(signal_result.signal_history_path),
                 "signal_report": str(signal_result.signal_report_path),
                 "data_quality_report": str(signal_result.data_quality_path),
             }
-        )
+            payload["outputs"].update(
+                {
+                    "signal_today": str(signal_result.signal_today_path),
+                    "signal_history": str(signal_result.signal_history_path),
+                    "signal_report": str(signal_result.signal_report_path),
+                    "data_quality_report": str(signal_result.data_quality_path),
+                }
+            )
 
         if risk_policy_path:
             risk_result = build_voltarget_risk_dashboard(
@@ -321,6 +421,9 @@ def run_automated_voltarget_paper_monitor(
             "status": daily.status.get("status", "failed"),
             "status_path": str(daily.status_path),
             "log_path": str(daily.log_path),
+            "market_data_refresh": daily.status.get("steps", {}).get("market_data_refresh", {}),
+            "data_freshness_check": daily.status.get("steps", {}).get("data_freshness_check", {}),
+            "generate_voltarget_signal": daily.status.get("steps", {}).get("generate_voltarget_signal", {}),
         }
         if daily.status.get("status") == "failed":
             raise ValueError(str(daily.status.get("error", "daily monitor failed")))

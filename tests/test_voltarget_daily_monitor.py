@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from research import voltarget_daily_monitor
+from research.market_data_refresh import MarketDataRefreshResult
 from research.voltarget_daily_monitor import run_daily_voltarget_monitor
 
 
@@ -159,6 +160,11 @@ def _write_daily_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "slippage_bps": 0.0,
                 "financing_annual_cost": 0.06,
                 "stale_data_warning_days": 5,
+                "max_allowed_stale_days": 5,
+                "auto_refresh_market_data": True,
+                "refresh_lookback_days": 10,
+                "fail_on_stale_data": False,
+                "stale_data_blocks_new_signal": True,
                 "target_symbol": "TQQQ",
                 "benchmark_symbol": "TQQQ",
                 "risk_policy_config": str(policy_path),
@@ -235,3 +241,77 @@ def test_no_broker_or_order_code_exists() -> None:
     source = Path(voltarget_daily_monitor.__file__).read_text(encoding="utf-8")
     forbidden = {"broker_api", "submit_order", "place_order", "auto_trade", "rebalance_account"}
     assert forbidden.isdisjoint(source)
+
+
+def _refresh_result(*, status: str, success: bool, stale_days: int) -> MarketDataRefreshResult:
+    return MarketDataRefreshResult(
+        attempted=True,
+        refresh_success=success,
+        source="refresh" if success else "failed_refresh",
+        status=status,
+        cache_path=Path("price_cache/tqqq_qqq_ohlc.csv"),
+        latest_price_date="2020-02-14",
+        stale_days=stale_days,
+        max_allowed_stale_days=1,
+        refreshed_rows=1 if success else 0,
+        error="" if success else "network unavailable",
+        generated_at="2026-01-01T00:00:00+00:00",
+    )
+
+
+def test_stale_cache_triggers_refresh_attempt_and_blocks_signal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path, data_csv, _ = _write_daily_fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["max_allowed_stale_days"] = 1
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    calls = {"refresh": 0, "signal": 0}
+
+    def fake_refresh(*_: object, **__: object) -> MarketDataRefreshResult:
+        calls["refresh"] += 1
+        return _refresh_result(status="stale_data", success=False, stale_days=16)
+
+    def fake_signal(**_: object) -> object:
+        calls["signal"] += 1
+        raise AssertionError("stale data should block accepted signal generation")
+
+    monkeypatch.setattr(voltarget_daily_monitor, "refresh_recent_market_data", fake_refresh)
+    monkeypatch.setattr(voltarget_daily_monitor, "generate_voltarget_signal", fake_signal)
+
+    result = run_daily_voltarget_monitor(
+        config_path=config_path,
+        output_dir=tmp_path / "out",
+        data_csv=data_csv,
+        as_of_date=pd.Timestamp("2020-03-01"),
+    )
+
+    status = json.loads(result.status_path.read_text(encoding="utf-8"))
+    assert result.status["status"] == "warning"
+    assert status["steps"]["market_data_refresh"]["attempted"] is True
+    assert status["steps"]["generate_voltarget_signal"]["status"] == "stale_data"
+    assert status["steps"]["generate_voltarget_signal"]["accepted_signal"] is False
+    assert calls == {"refresh": 1, "signal": 0}
+
+
+def test_fresh_refresh_clears_stale_warning_and_accepts_signal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path, data_csv, _ = _write_daily_fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["max_allowed_stale_days"] = 1
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    def fake_refresh(*_: object, **__: object) -> MarketDataRefreshResult:
+        return _refresh_result(status="ok", success=True, stale_days=0)
+
+    monkeypatch.setattr(voltarget_daily_monitor, "refresh_recent_market_data", fake_refresh)
+
+    result = run_daily_voltarget_monitor(
+        config_path=config_path,
+        output_dir=tmp_path / "out",
+        data_csv=data_csv,
+        as_of_date=pd.Timestamp("2020-02-14"),
+    )
+
+    status = json.loads(result.status_path.read_text(encoding="utf-8"))
+    assert result.status["status"] == "ok"
+    assert status["steps"]["market_data_refresh"]["refresh_success"] is True
+    assert status["steps"]["generate_voltarget_signal"]["accepted_signal"] is True
+    assert "Market Data Refresh" in (tmp_path / "out" / "signal_report.md").read_text(encoding="utf-8")

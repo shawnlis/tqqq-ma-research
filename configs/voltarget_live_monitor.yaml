@@ -1,5 +1,9 @@
 input_dir: outputs/tournament_voltarget_stage3
 cache_dir: ./price_cache
+auto_refresh_market_data: true
+refresh_lookback_days: 10
+fail_on_stale_data: false
+stale_data_blocks_new_signal: true
 execution_assumption: next_open_to_next_open
 transaction_cost_bps: 10.0
 slippage_bps: 0.0
@@ -24,3 +28,7 @@ production_ready: false
 paper_trading_only: true
 auto_paper_ledger_enabled: true
 manual_ledger_required: false
+paper_ledger_start_mode: live_from_config_date
+paper_ledger_start_date:
+paper_ledger_allow_historical_backfill: false
+paper_ledger_reset_allowed: false

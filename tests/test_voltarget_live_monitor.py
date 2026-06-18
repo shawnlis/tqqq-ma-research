@@ -112,6 +112,10 @@ def _write_fixture(tmp_path: Path, *, future_multiplier: float = 1.0) -> tuple[P
                 "input_dir": str(input_dir),
                 "cache_dir": "./price_cache",
                 "execution_assumption": "next_open_to_next_open",
+                "auto_refresh_market_data": True,
+                "refresh_lookback_days": 10,
+                "fail_on_stale_data": False,
+                "stale_data_blocks_new_signal": True,
                 "transaction_cost_bps": 10.0,
                 "slippage_bps": 0.0,
                 "paper_ledger_mode": "auto",
@@ -135,6 +139,10 @@ def _write_fixture(tmp_path: Path, *, future_multiplier: float = 1.0) -> tuple[P
                 "paper_trading_only": True,
                 "auto_paper_ledger_enabled": True,
                 "manual_ledger_required": False,
+                "paper_ledger_start_mode": "live_from_config_date",
+                "paper_ledger_start_date": None,
+                "paper_ledger_allow_historical_backfill": False,
+                "paper_ledger_reset_allowed": False,
             }
         ),
         encoding="utf-8",
@@ -293,6 +301,10 @@ def test_live_monitor_config_loads_new_financing_fields(tmp_path: Path) -> None:
     config = load_monitor_config(config_path)
 
     assert config["annual_financing_rate_assumption"] == pytest.approx(0.06)
+    assert config["auto_refresh_market_data"] is True
+    assert config["refresh_lookback_days"] == 10
+    assert config["fail_on_stale_data"] is False
+    assert config["stale_data_blocks_new_signal"] is True
     assert config["financing_applies_above_exposure"] == pytest.approx(1.0)
     assert config["financing_day_count_basis"] == 252
     assert config["paper_ledger_mode"] == "auto"
@@ -305,3 +317,7 @@ def test_live_monitor_config_loads_new_financing_fields(tmp_path: Path) -> None:
     assert config["max_allowed_stale_days"] == 1
     assert config["auto_paper_ledger_enabled"] is True
     assert config["manual_ledger_required"] is False
+    assert config["paper_ledger_start_mode"] == "live_from_config_date"
+    assert config["paper_ledger_start_date"] is None
+    assert config["paper_ledger_allow_historical_backfill"] is False
+    assert config["paper_ledger_reset_allowed"] is False

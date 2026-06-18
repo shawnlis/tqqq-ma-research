@@ -16,6 +16,13 @@ outputs/
 price_cache/
 ma_search_output*/
 
+# Local Scheduler enablement files copied from committed templates.
+scripts/run_voltarget_daily_monitor.ps1
+scripts/run_voltarget_weekly_review.ps1
+scripts/create_voltarget_monitor_tasks.ps1
+automation/windows_task_voltarget_daily.xml
+automation/windows_task_voltarget_weekly.xml
+
 *.log
 .DS_Store
 Thumbs.db

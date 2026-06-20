@@ -289,6 +289,27 @@ def test_health_check_fails_if_latest_scheduler_status_failed(tmp_path: Path) ->
     assert bool(row["hard_fail"])
 
 
+def test_health_check_reads_power_shell_json_with_bom(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
+    (live / "latest_scheduler_status.json").write_text(
+        "\ufeff" + json.dumps({"status": "ok", "message": "wrapper ok"}),
+        encoding="utf-8",
+    )
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
+        ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    row = result.summary.set_index("check").loc["latest_scheduler_status"]
+    assert row["status"] == "ok"
+    assert row["detail"] == "wrapper ok"
+
+
 def test_health_check_distinguishes_live_monitor_from_historical_backfill(tmp_path: Path) -> None:
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
     config = _write_auto_config(tmp_path / "config.yaml")

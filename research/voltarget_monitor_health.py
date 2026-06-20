@@ -42,7 +42,7 @@ def _add(rows: List[Dict[str, object]], check: str, status: str, detail: str = "
 
 
 def _read_json(path: Path) -> Dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _scan_forbidden_tokens(paths: Iterable[Path]) -> List[str]:

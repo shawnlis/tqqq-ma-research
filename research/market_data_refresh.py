@@ -10,6 +10,7 @@ import yfinance as yf
 
 from .data import _selected_price_columns
 from .execution import OHLC_FIELDS, ohlc_column
+from .trading_calendar import nyse_trading_days_between
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ class MarketDataRefreshResult:
     status: str
     cache_path: Path
     latest_price_date: str
+    calendar_stale_days: int
+    trading_stale_days: int
     stale_days: int
     max_allowed_stale_days: int
     refreshed_rows: int
@@ -34,6 +37,8 @@ class MarketDataRefreshResult:
             "status": self.status,
             "cache_path": str(self.cache_path),
             "latest_price_date": self.latest_price_date,
+            "calendar_stale_days": self.calendar_stale_days,
+            "trading_stale_days": self.trading_stale_days,
             "stale_days": self.stale_days,
             "max_allowed_stale_days": self.max_allowed_stale_days,
             "refreshed_rows": self.refreshed_rows,
@@ -89,12 +94,14 @@ def _download_ohlc(symbols: tuple[str, ...], start: str) -> pd.DataFrame:
     return out
 
 
-def _latest_stale_days(frame: pd.DataFrame, as_of_date: Optional[pd.Timestamp]) -> tuple[str, int]:
+def _latest_stale_days(frame: pd.DataFrame, as_of_date: Optional[pd.Timestamp]) -> tuple[str, int, int]:
     if frame.empty:
-        return "", 999999
+        return "", 999999, 999999
     latest = pd.Timestamp(frame.index.max()).normalize()
     as_of = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.today().normalize()
-    return latest.date().isoformat(), int(max((as_of - latest).days, 0))
+    calendar_stale_days = int(max((as_of - latest).days, 0))
+    trading_stale_days = nyse_trading_days_between(latest, as_of)
+    return latest.date().isoformat(), calendar_stale_days, trading_stale_days
 
 
 def refresh_recent_market_data(
@@ -112,15 +119,17 @@ def refresh_recent_market_data(
 
     if data_csv is not None:
         data = pd.read_csv(data_csv, parse_dates=["Date"]).set_index("Date").sort_index()
-        latest, stale_days = _latest_stale_days(data, as_of_date)
+        latest, calendar_stale_days, trading_stale_days = _latest_stale_days(data, as_of_date)
         return MarketDataRefreshResult(
             attempted=False,
             refresh_success=False,
             source="data_csv",
-            status="ok" if stale_days <= max_stale else "stale_data",
+            status="ok" if trading_stale_days <= max_stale else "stale_data",
             cache_path=Path(data_csv),
             latest_price_date=latest,
-            stale_days=stale_days,
+            calendar_stale_days=calendar_stale_days,
+            trading_stale_days=trading_stale_days,
+            stale_days=trading_stale_days,
             max_allowed_stale_days=max_stale,
             refreshed_rows=0,
             error="",
@@ -158,8 +167,8 @@ def refresh_recent_market_data(
             error = str(exc)
             source = "failed_refresh"
 
-    latest, stale_days = _latest_stale_days(combined, as_of_date)
-    status = "ok" if stale_days <= max_stale else "stale_data"
+    latest, calendar_stale_days, trading_stale_days = _latest_stale_days(combined, as_of_date)
+    status = "ok" if trading_stale_days <= max_stale else "stale_data"
     return MarketDataRefreshResult(
         attempted=attempted,
         refresh_success=refresh_success,
@@ -167,7 +176,9 @@ def refresh_recent_market_data(
         status=status,
         cache_path=cache_path,
         latest_price_date=latest,
-        stale_days=stale_days,
+        calendar_stale_days=calendar_stale_days,
+        trading_stale_days=trading_stale_days,
+        stale_days=trading_stale_days,
         max_allowed_stale_days=max_stale,
         refreshed_rows=refreshed_rows,
         error=error,

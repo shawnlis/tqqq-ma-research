@@ -12,6 +12,7 @@ from .data_snapshot import verify_data_snapshot
 from .auto_paper_ledger import update_auto_paper_ledger
 from .execution_drift import run_execution_drift_tracking
 from .market_data_refresh import refresh_recent_market_data
+from .trading_calendar import nyse_trading_days_between
 from .visualization import generate_equity_visualizations
 from .voltarget_live_monitor import build_monitor_frame, generate_voltarget_signal, load_monitor_config
 from .voltarget_monitor_health import check_voltarget_monitor_health
@@ -80,8 +81,9 @@ def _write_stale_signal_report(path: Path, refresh: Dict[str, Any], freshness: D
         f"- Refresh success: `{refresh.get('refresh_success', False)}`",
         f"- Data source: `{refresh.get('source', '')}`",
         f"- Latest price date: `{refresh.get('latest_price_date', freshness.get('latest_price_date', ''))}`",
-        f"- Stale days: `{refresh.get('stale_days', freshness.get('stale_days', ''))}`",
-        f"- Max allowed stale days: `{refresh.get('max_allowed_stale_days', freshness.get('stale_warning_days', ''))}`",
+        f"- Calendar stale days: `{refresh.get('calendar_stale_days', freshness.get('calendar_stale_days', refresh.get('stale_days', freshness.get('stale_days', ''))))}`",
+        f"- Trading stale days: `{refresh.get('trading_stale_days', freshness.get('trading_stale_days', refresh.get('stale_days', freshness.get('stale_days', ''))))}`",
+        f"- Max allowed trading stale days: `{refresh.get('max_allowed_stale_days', freshness.get('stale_warning_days', ''))}`",
         f"- Refresh error: `{refresh.get('error', '')}`",
         "",
         "## Status",
@@ -99,7 +101,9 @@ def _write_data_quality(path: Path, refresh: Dict[str, Any], freshness: Dict[str
             {
                 "latest_price_date": refresh.get("latest_price_date", freshness.get("latest_price_date", "")),
                 "as_of_date": freshness.get("as_of_date", ""),
-                "stale_days": refresh.get("stale_days", freshness.get("stale_days", "")),
+                "calendar_stale_days": refresh.get("calendar_stale_days", freshness.get("calendar_stale_days", refresh.get("stale_days", freshness.get("stale_days", "")))),
+                "trading_stale_days": refresh.get("trading_stale_days", freshness.get("trading_stale_days", refresh.get("stale_days", freshness.get("stale_days", "")))),
+                "stale_days": refresh.get("trading_stale_days", freshness.get("trading_stale_days", refresh.get("stale_days", freshness.get("stale_days", "")))),
                 "stale_warning_days": refresh.get("max_allowed_stale_days", freshness.get("stale_warning_days", "")),
                 "status": "stale_data_warning",
                 "warning": freshness.get("warning", "latest data is stale"),
@@ -122,8 +126,9 @@ def _append_refresh_to_report(path: Path, refresh: Dict[str, Any]) -> None:
         f"- Refresh success: `{refresh.get('refresh_success', False)}`",
         f"- Data source: `{refresh.get('source', '')}`",
         f"- Latest price date after refresh: `{refresh.get('latest_price_date', '')}`",
-        f"- Stale days after refresh: `{refresh.get('stale_days', '')}`",
-        f"- Max allowed stale days: `{refresh.get('max_allowed_stale_days', '')}`",
+        f"- Calendar stale days after refresh: `{refresh.get('calendar_stale_days', refresh.get('stale_days', ''))}`",
+        f"- Trading stale days after refresh: `{refresh.get('trading_stale_days', refresh.get('stale_days', ''))}`",
+        f"- Max allowed trading stale days: `{refresh.get('max_allowed_stale_days', '')}`",
         f"- Refresh error: `{refresh.get('error', '')}`",
         "",
     ]
@@ -140,16 +145,19 @@ def check_monitor_data_freshness(
     frame = build_monitor_frame(config, data_csv=data_csv, signal_as_of_date=as_of_date)
     latest_date = pd.Timestamp(frame.index[-1]).normalize()
     as_of = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.today().normalize()
-    stale_days = int(max((as_of - latest_date).days, 0))
+    calendar_stale_days = int(max((as_of - latest_date).days, 0))
+    trading_stale_days = nyse_trading_days_between(latest_date, as_of)
     stale_limit = int(config.get("max_allowed_stale_days", config["stale_data_warning_days"]))
-    status = "ok" if stale_days <= stale_limit else "warning"
+    status = "ok" if trading_stale_days <= stale_limit else "warning"
     return {
         "status": status,
         "latest_price_date": latest_date.date().isoformat(),
         "as_of_date": as_of.date().isoformat(),
-        "stale_days": stale_days,
+        "calendar_stale_days": calendar_stale_days,
+        "trading_stale_days": trading_stale_days,
+        "stale_days": trading_stale_days,
         "stale_warning_days": stale_limit,
-        "warning": "" if status == "ok" else f"latest data is {stale_days} calendar days old",
+        "warning": "" if status == "ok" else f"latest data is {trading_stale_days} trading days old",
     }
 
 
@@ -188,6 +196,8 @@ def _log_row(payload: Dict[str, Any]) -> Dict[str, Any]:
         "status": payload["status"],
         "latest_price_date": signal.get("latest_price_date", freshness.get("latest_price_date", "")),
         "data_freshness_status": freshness.get("status", ""),
+        "calendar_stale_days": freshness.get("calendar_stale_days", ""),
+        "trading_stale_days": freshness.get("trading_stale_days", freshness.get("stale_days", "")),
         "stale_days": freshness.get("stale_days", ""),
         "snapshot_status": snapshot.get("status", ""),
         "signal_status": signal.get("status", ""),
@@ -262,9 +272,11 @@ def run_daily_voltarget_monitor(
         if refresh.status == "stale_data":
             freshness["status"] = "warning"
             freshness["latest_price_date"] = refresh.latest_price_date
-            freshness["stale_days"] = refresh.stale_days
+            freshness["calendar_stale_days"] = refresh.calendar_stale_days
+            freshness["trading_stale_days"] = refresh.trading_stale_days
+            freshness["stale_days"] = refresh.trading_stale_days
             freshness["stale_warning_days"] = refresh.max_allowed_stale_days
-            freshness["warning"] = f"latest data is {refresh.stale_days} calendar days old after refresh"
+            freshness["warning"] = f"latest data is {refresh.trading_stale_days} trading days old after refresh"
         payload["steps"]["data_freshness_check"] = freshness
 
         snapshot = _verify_snapshot_if_configured(config, data_csv=data_csv)

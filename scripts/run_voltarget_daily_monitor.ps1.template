@@ -7,6 +7,7 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $LogDir = Join-Path $RepoRoot "logs\voltarget_monitor"
 $SignalDir = Join-Path $RepoRoot "outputs\live_signal"
 $SchedulerStatusPath = Join-Path $SignalDir "latest_scheduler_status.json"
+$AutomationStatusPath = Join-Path $SignalDir "latest_automation_status.json"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SignalDir | Out-Null
@@ -43,6 +44,26 @@ function Write-SchedulerStatus {
         no_auto_trading = $true
         no_broker_integration = $true
         steps = $Steps
+    }
+    if (Test-Path -LiteralPath $AutomationStatusPath) {
+        try {
+            $AutomationStatus = Get-Content -Raw -LiteralPath $AutomationStatusPath | ConvertFrom-Json
+            $Freshness = $AutomationStatus.steps.daily_monitor.data_freshness_check
+            $Refresh = $AutomationStatus.steps.daily_monitor.market_data_refresh
+            if ($null -ne $Freshness) {
+                $Payload["data_freshness_status"] = $Freshness.status
+                $Payload["latest_price_date"] = $Freshness.latest_price_date
+                $Payload["calendar_stale_days"] = $Freshness.calendar_stale_days
+                $Payload["trading_stale_days"] = $Freshness.trading_stale_days
+                $Payload["stale_warning_days"] = $Freshness.stale_warning_days
+            }
+            if ($null -ne $Refresh) {
+                $Payload["refresh_success"] = $Refresh.refresh_success
+                $Payload["last_refresh_attempt"] = $Refresh.generated_at
+            }
+        } catch {
+            $Payload["freshness_status_error"] = $_.Exception.Message
+        }
     }
     $Payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $SchedulerStatusPath -Encoding UTF8
 }

@@ -131,10 +131,14 @@ def check_voltarget_monitor_health(
         if quality.empty:
             _add(rows, "stale_data_days", "warning", "data_quality_report.csv is empty")
         else:
-            stale_days = int(pd.to_numeric(quality.iloc[0].get("stale_days", 0), errors="coerce"))
+            legacy_stale_days = int(pd.to_numeric(quality.iloc[0].get("stale_days", 0), errors="coerce"))
+            calendar_stale_days = int(pd.to_numeric(quality.iloc[0].get("calendar_stale_days", legacy_stale_days), errors="coerce"))
+            trading_stale_days = int(pd.to_numeric(quality.iloc[0].get("trading_stale_days", legacy_stale_days), errors="coerce"))
             quality_status = str(quality.iloc[0].get("status", ""))
             status = "warning" if quality_status != "ok" else "ok"
-            _add(rows, "stale_data_days", status, f"stale_days={stale_days}; status={quality_status}")
+            _add(rows, "calendar_stale_days", "ok", str(calendar_stale_days))
+            _add(rows, "trading_stale_days", status, f"trading_stale_days={trading_stale_days}; status={quality_status}")
+            _add(rows, "stale_data_days", status, f"trading_stale_days={trading_stale_days}; calendar_stale_days={calendar_stale_days}; status={quality_status}")
     else:
         _add(rows, "stale_data_days", "warning", f"missing {quality_path}")
 
@@ -197,7 +201,14 @@ def check_voltarget_monitor_health(
             _add(rows, "last_refresh_attempt", "ok", str(refresh.get("generated_at", "")))
             _add(rows, "refresh_success", "ok" if bool(refresh.get("refresh_success", False)) else "warning", str(refresh.get("refresh_success", False)))
             _add(rows, "latest_price_date", "ok", str(refresh.get("latest_price_date", "")))
-            _add(rows, "stale_days", "ok" if refresh_status == "ok" else "warning", str(refresh.get("stale_days", "")))
+            _add(rows, "refresh_calendar_stale_days", "ok", str(refresh.get("calendar_stale_days", refresh.get("stale_days", ""))))
+            _add(
+                rows,
+                "refresh_trading_stale_days",
+                "ok" if refresh_status == "ok" else "warning",
+                str(refresh.get("trading_stale_days", refresh.get("stale_days", ""))),
+            )
+            _add(rows, "stale_days", "ok" if refresh_status == "ok" else "warning", str(refresh.get("trading_stale_days", refresh.get("stale_days", ""))))
     else:
         _add(rows, "latest_run_status", "warning", f"missing {run_status_path}")
 

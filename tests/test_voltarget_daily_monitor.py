@@ -251,6 +251,8 @@ def _refresh_result(*, status: str, success: bool, stale_days: int) -> MarketDat
         status=status,
         cache_path=Path("price_cache/tqqq_qqq_ohlc.csv"),
         latest_price_date="2020-02-14",
+        calendar_stale_days=stale_days,
+        trading_stale_days=stale_days,
         stale_days=stale_days,
         max_allowed_stale_days=1,
         refreshed_rows=1 if success else 0,
@@ -315,3 +317,85 @@ def test_fresh_refresh_clears_stale_warning_and_accepts_signal(tmp_path: Path, m
     assert status["steps"]["market_data_refresh"]["refresh_success"] is True
     assert status["steps"]["generate_voltarget_signal"]["accepted_signal"] is True
     assert "Market Data Refresh" in (tmp_path / "out" / "signal_report.md").read_text(encoding="utf-8")
+
+
+def test_weekend_does_not_create_trading_day_stale_warning(tmp_path: Path) -> None:
+    config_path, data_csv, _ = _write_daily_fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["max_allowed_stale_days"] = 0
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    result = run_daily_voltarget_monitor(
+        config_path=config_path,
+        output_dir=tmp_path / "out",
+        data_csv=data_csv,
+        as_of_date=pd.Timestamp("2020-02-16"),
+    )
+
+    freshness = result.status["steps"]["data_freshness_check"]
+    assert freshness["calendar_stale_days"] == 2
+    assert freshness["trading_stale_days"] == 0
+    assert freshness["status"] == "ok"
+
+
+def test_juneteenth_2026_does_not_create_trading_day_stale_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path, data_csv, _ = _write_daily_fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["max_allowed_stale_days"] = 0
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    def fake_frame(*_: object, **__: object) -> pd.DataFrame:
+        return pd.DataFrame({"target_exposure": [0.0]}, index=[pd.Timestamp("2026-06-18")])
+
+    def fake_refresh(*_: object, **__: object) -> MarketDataRefreshResult:
+        return MarketDataRefreshResult(
+            attempted=True,
+            refresh_success=True,
+            source="refresh",
+            status="ok",
+            cache_path=Path("price_cache/tqqq_qqq_ohlc.csv"),
+            latest_price_date="2026-06-18",
+            calendar_stale_days=2,
+            trading_stale_days=0,
+            stale_days=0,
+            max_allowed_stale_days=0,
+            refreshed_rows=1,
+            error="",
+            generated_at="2026-06-20T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr(voltarget_daily_monitor, "build_monitor_frame", fake_frame)
+    monkeypatch.setattr(voltarget_daily_monitor, "refresh_recent_market_data", fake_refresh)
+
+    result = run_daily_voltarget_monitor(
+        config_path=config_path,
+        output_dir=tmp_path / "out",
+        data_csv=data_csv,
+        as_of_date=pd.Timestamp("2026-06-20"),
+    )
+
+    freshness = result.status["steps"]["data_freshness_check"]
+    assert freshness["calendar_stale_days"] == 2
+    assert freshness["trading_stale_days"] == 0
+    assert freshness["status"] == "ok"
+
+
+def test_missing_completed_trading_day_creates_warning(tmp_path: Path) -> None:
+    config_path, data_csv, _ = _write_daily_fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["max_allowed_stale_days"] = 0
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    result = run_daily_voltarget_monitor(
+        config_path=config_path,
+        output_dir=tmp_path / "out",
+        data_csv=data_csv,
+        as_of_date=pd.Timestamp("2020-02-19"),
+    )
+
+    freshness = result.status["steps"]["data_freshness_check"]
+    assert freshness["calendar_stale_days"] == 5
+    assert freshness["trading_stale_days"] == 1
+    assert freshness["status"] == "warning"

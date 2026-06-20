@@ -18,6 +18,7 @@ import yaml
 from .execution import NEXT_OPEN_TO_NEXT_OPEN, normalize_execution_model
 from .execution_financing import _load_price_data, _read_json, _resolve_output_dir, apply_slippage_and_financing, replay_locked_voltarget_candidate
 from .final_voltarget_audit import locate_plain_voltarget_candidate
+from .trading_calendar import nyse_trading_days_between
 from .voltarget_risk_dashboard import build_policy_breaches, load_risk_policy
 
 
@@ -251,7 +252,8 @@ def _write_financing_report(path: Path, config: Dict[str, Any], history: pd.Data
 def _data_quality(config: Dict[str, Any], frame: pd.DataFrame, as_of_date: Optional[pd.Timestamp]) -> pd.DataFrame:
     latest_date = pd.Timestamp(frame.index[-1]).normalize()
     as_of = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.today().normalize()
-    stale_days = int(max((as_of - latest_date).days, 0))
+    calendar_stale_days = int(max((as_of - latest_date).days, 0))
+    trading_stale_days = nyse_trading_days_between(latest_date, as_of)
     stale_limit = int(config.get("max_allowed_stale_days", config["stale_data_warning_days"]))
     required_columns = [
         "target_exposure",
@@ -269,15 +271,17 @@ def _data_quality(config: Dict[str, Any], frame: pd.DataFrame, as_of_date: Optio
     if missing:
         status = "missing_required_columns"
         warning = ";".join(missing)
-    elif stale_days > stale_limit:
+    elif trading_stale_days > stale_limit:
         status = "stale_data_warning"
-        warning = f"latest data is {stale_days} calendar days old"
+        warning = f"latest data is {trading_stale_days} trading days old"
     return pd.DataFrame(
         [
             {
                 "latest_price_date": str(latest_date.date()),
                 "as_of_date": str(as_of.date()),
-                "stale_days": stale_days,
+                "calendar_stale_days": calendar_stale_days,
+                "trading_stale_days": trading_stale_days,
+                "stale_days": trading_stale_days,
                 "stale_warning_days": stale_limit,
                 "status": status,
                 "warning": warning,
@@ -299,6 +303,8 @@ def _risk_breaches(config: Dict[str, Any], latest: pd.Series, quality: pd.DataFr
         "required_trade_delta": float(latest["trade_delta"]),
         "current_drawdown": float(latest["drawdown"]),
         "stale_days": int(quality.iloc[0]["stale_days"]),
+        "calendar_stale_days": int(quality.iloc[0].get("calendar_stale_days", quality.iloc[0]["stale_days"])),
+        "trading_stale_days": int(quality.iloc[0].get("trading_stale_days", quality.iloc[0]["stale_days"])),
     }
     return build_policy_breaches(policy, state)
 
@@ -396,7 +402,8 @@ def _write_report(path: Path, config: Dict[str, Any], signal: Dict[str, Any], la
         "",
         "## Daily Signal",
         f"- Latest data date: `{signal['latest_price_date']}`",
-        f"- Data stale days: `{int(quality_row['stale_days'])}`",
+        f"- Calendar stale days: `{int(quality_row.get('calendar_stale_days', quality_row['stale_days']))}`",
+        f"- Trading stale days: `{int(quality_row.get('trading_stale_days', quality_row['stale_days']))}`",
         f"- Current target exposure: `{signal['target_exposure_next_session']}`",
         f"- Previous target exposure: `{signal['previous_target_exposure']}`",
         f"- Current exposure: `{signal['current_exposure']}`",

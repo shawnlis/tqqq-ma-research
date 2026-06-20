@@ -17,7 +17,14 @@ from research.voltarget_daily_monitor import run_automated_voltarget_paper_monit
 from research.voltarget_monitor_health import check_voltarget_monitor_health
 
 
-def _write_health_fixture(tmp_path: Path, *, stale_days: int = 0, ledger_exists: bool = True) -> tuple[Path, Path, Path, Path]:
+def _write_health_fixture(
+    tmp_path: Path,
+    *,
+    stale_days: int = 0,
+    calendar_stale_days: int | None = None,
+    trading_stale_days: int | None = None,
+    ledger_exists: bool = True,
+) -> tuple[Path, Path, Path, Path]:
     live = tmp_path / "outputs" / "live_signal"
     drift = tmp_path / "outputs" / "execution_drift"
     reconcile = tmp_path / "outputs" / "paper_reconciliation"
@@ -37,7 +44,9 @@ def _write_health_fixture(tmp_path: Path, *, stale_days: int = 0, ledger_exists:
             {
                 "latest_price_date": "2026-06-12",
                 "as_of_date": "2026-06-17",
-                "stale_days": stale_days,
+                "calendar_stale_days": stale_days if calendar_stale_days is None else calendar_stale_days,
+                "trading_stale_days": stale_days if trading_stale_days is None else trading_stale_days,
+                "stale_days": stale_days if trading_stale_days is None else trading_stale_days,
                 "stale_warning_days": 5,
                 "status": "ok" if stale_days == 0 else "stale_data_warning",
                 "warning": "",
@@ -177,6 +186,29 @@ def test_health_check_warns_on_stale_data(tmp_path: Path) -> None:
     assert result.overall_status == "warning"
     row = result.summary.set_index("check").loc["stale_data_days"]
     assert row["status"] == "warning"
+
+
+def test_health_check_uses_trading_day_stale_status_and_shows_calendar_stale(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(
+        tmp_path,
+        stale_days=0,
+        calendar_stale_days=2,
+        trading_stale_days=0,
+    )
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
+        ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    by_check = result.summary.set_index("check")
+    assert result.overall_status == "ok"
+    assert by_check.loc["calendar_stale_days", "detail"] == "2"
+    assert by_check.loc["trading_stale_days", "status"] == "ok"
+    assert "trading_stale_days=0" in by_check.loc["stale_data_days", "detail"]
 
 
 def test_health_check_warns_if_ledger_missing_without_hard_fail(tmp_path: Path) -> None:
@@ -417,6 +449,40 @@ def test_daily_template_allows_native_stderr_when_exit_code_is_zero(tmp_path: Pa
         encoding="utf-8",
     )
     assert "native info log from stderr" in log_text
+
+
+def test_daily_template_writes_freshness_fields_to_scheduler_status(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    source = Path("scripts/run_voltarget_daily_monitor.ps1.template")
+    target = scripts / "run_voltarget_daily_monitor.ps1"
+    shutil.copyfile(source, target)
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    (fake_bin / "python.cmd").write_text(
+        "@echo off\n"
+        "mkdir outputs\\live_signal 2>nul\n"
+        "echo {^\"steps^\":{^\"daily_monitor^\":{^\"data_freshness_check^\":{^\"status^\":^\"ok^\",^\"latest_price_date^\":^\"2026-06-18^\",^\"calendar_stale_days^\":2,^\"trading_stale_days^\":0,^\"stale_warning_days^\":1},^\"market_data_refresh^\":{^\"refresh_success^\":true,^\"generated_at^\":^\"2026-06-20T00:00:00Z^\"}}}} > outputs\\live_signal\\latest_automation_status.json\n"
+        "exit /b 0\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(target)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    status = json.loads((tmp_path / "outputs" / "live_signal" / "latest_scheduler_status.json").read_text(encoding="utf-8-sig"))
+    assert status["data_freshness_status"] == "ok"
+    assert status["latest_price_date"] == "2026-06-18"
+    assert status["calendar_stale_days"] == 2
+    assert status["trading_stale_days"] == 0
+    assert status["refresh_success"] is True
 
 
 def test_one_command_workflow_calls_expected_components(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

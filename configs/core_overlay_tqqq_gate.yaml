@@ -1,0 +1,24 @@
+experiment_name: core_overlay_tqqq_gate
+symbols: [TQQQ, QQQ]
+start_date: "2020-01-01"
+end_date: "2026-06-12"
+strategy_name: core_overlay
+parameter_grid:
+  core_exposure: [0.65]
+  overlay_max: [0.35]
+  max_total_exposure: [1.15]
+  trend_window: [150]
+  fast_trend_window: [50]
+  momentum_window: [63]
+  vol_window: [20]
+  vol_cap: [0.026]
+  crash_cut_exposure: [0.25]
+  rebound_boost: [false]
+benchmark_symbol: TQQQ
+transaction_cost_bps: 10.0
+train_years: 5
+test_years: 1
+objective: objective_final_ratio
+anti_overfit_validation:
+  enabled: false
+output_dir: outputs/controlled_gate/core_overlay_tqqq_gate

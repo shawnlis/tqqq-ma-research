@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -12,11 +14,13 @@ from .assets import AssetConfig, asset_config_from_mapping
 from .data import CASH_SYMBOL, add_cash_series, load_prices, make_synthetic_leveraged_price
 from .execution import (
     CLOSE_TO_CLOSE_SHIFTED,
+    EXECUTION_MODELS,
     asset_returns,
     normalize_execution_model,
     ohlc_columns,
     resolve_execution_model,
 )
+from .fairness import write_voltarget_fairness_outputs
 from .metrics import summarize_performance
 from .reports import (
     compare_real_to_synthetic,
@@ -26,7 +30,7 @@ from .reports import (
     save_run_config,
     save_synthetic_tracking,
 )
-from .sensitivity import run_cost_and_execution_sensitivity
+from .sensitivity import COST_SCENARIOS, run_cost_and_execution_sensitivity
 from .strategies.core_overlay_strategy import CoreOverlayParams, make_core_overlay_param_grid
 from .strategies.drawdown_governor import DrawdownGovernorParams
 from .strategies.ma_strategy import Params, make_param_grid
@@ -50,6 +54,7 @@ from .validation import (
     walk_forward_regime_search,
     walk_forward_rotation_search,
     walk_forward_search,
+    walk_forward_search_ensemble,
     walk_forward_vol_target_search,
     walk_forward_windows,
 )
@@ -67,6 +72,21 @@ REQUIRED_EXPERIMENT_FIELDS = {
     "objective",
     "output_dir",
 }
+DEFAULT_SECONDS_PER_ESTIMATED_EVALUATION = 0.002
+REQUIRED_SUCCESS_OUTPUTS = (
+    "stitched_equity.csv",
+    "walk_forward_windows.csv",
+    "same_period_benchmark_summary.csv",
+    "yearly_returns.csv",
+    "run_config.json",
+    "report.md",
+)
+
+
+class ExperimentInfrastructureError(RuntimeError):
+    def __init__(self, classification: str, message: str):
+        self.classification = str(classification)
+        super().__init__(message)
 
 
 def load_yaml_file(path: Path) -> Dict[str, Any]:
@@ -83,6 +103,202 @@ def _require_experiment_fields(config: Dict[str, Any]) -> None:
         raise ValueError(f"Experiment config is missing required fields: {missing}")
     if not any(key in config for key in ("strategy_params", "strategy_parameters", "parameters", "parameter_grid")):
         raise ValueError("Experiment config must include strategy_params, strategy_parameters, parameters, or parameter_grid.")
+
+
+def _strategy_grid_size(config: Dict[str, Any]) -> int:
+    strategy_name = str(config.get("strategy_name", "")).lower()
+    if strategy_name in {"buy_and_hold", "buy-hold", "buyhold"}:
+        return 1
+    if strategy_name in {"ma", "moving_average", "moving-average"}:
+        return len(_ma_grid(config))
+    if strategy_name == "regime":
+        return len(_regime_grid(config))
+    if strategy_name in {"core_overlay", "core-overlay", "core_overlay_tqqq", "coreoverlaytqqqstrategy"}:
+        return len(_core_overlay_grid(config))
+    if strategy_name in {"vol_target", "vol-target", "voltargettqqqstrategy", "vol_target_tqqq"}:
+        return len(_vol_target_grid(config))
+    if strategy_name in {"rotation", "cross_asset_momentum", "cross_asset_leveraged_momentum", "crossassetleveragedmomentumstrategy"}:
+        return len(_rotation_grid(config))
+    raise ValueError(f"Unsupported strategy_name for workload estimate: {config.get('strategy_name', '')}")
+
+
+def _estimated_window_count(config: Dict[str, Any]) -> int:
+    start = pd.Timestamp(config.get("start_date"))
+    end_value = config.get("end_date")
+    end = pd.Timestamp(end_value) if end_value else pd.Timestamp.today().normalize()
+    if pd.isna(start) or pd.isna(end) or end < start:
+        return 0
+    dates = pd.bdate_range(start, end)
+    if len(dates) == 0:
+        return 0
+    windows = walk_forward_windows(
+        dates,
+        train_years=int(config.get("train_years", 5)),
+        test_years=int(config.get("test_years", 1)),
+        mode=str(config.get("walk_forward_mode", "rolling")),
+    )
+    return int(len(windows))
+
+
+def _full_experiment_run_multiplier(config: Dict[str, Any]) -> int:
+    sensitivity_runs = max(len(COST_SCENARIOS) - 1, 0) + max(len(EXECUTION_MODELS) - 1, 0)
+    validation_config = config.get("anti_overfit_validation", {})
+    anti_overfit_enabled = not (
+        validation_config is False
+        or (isinstance(validation_config, dict) and validation_config.get("enabled") is False)
+    )
+    anti_overfit_extra_runs = 5 if anti_overfit_enabled else 0
+    return int(1 + sensitivity_runs + anti_overfit_extra_runs)
+
+
+def estimate_experiment_workload(
+    config: Dict[str, Any],
+    *,
+    include_full_experiment_overhead: bool = True,
+) -> Dict[str, Any]:
+    estimate_error = ""
+    try:
+        parameter_combinations = int(_strategy_grid_size(config))
+    except Exception as exc:
+        parameter_combinations = 0
+        estimate_error = str(exc)
+    try:
+        window_count = int(_estimated_window_count(config))
+    except Exception as exc:
+        window_count = 0
+        estimate_error = "; ".join(part for part in (estimate_error, str(exc)) if part)
+
+    run_multiplier = _full_experiment_run_multiplier(config) if include_full_experiment_overhead else 1
+    estimated_evaluations = int(parameter_combinations * window_count * run_multiplier)
+    seconds_per_eval = float(
+        config.get("estimated_seconds_per_evaluation", DEFAULT_SECONDS_PER_ESTIMATED_EVALUATION)
+    )
+    estimated_runtime_seconds = float(estimated_evaluations * seconds_per_eval)
+    return {
+        "estimated_parameter_combinations": parameter_combinations,
+        "estimated_walk_forward_windows": window_count,
+        "estimated_run_multiplier": run_multiplier,
+        "estimated_evaluations": estimated_evaluations,
+        "estimated_runtime_seconds": estimated_runtime_seconds,
+        "runtime_estimate_method": "grid_size * estimated_walk_forward_windows * run_multiplier * seconds_per_evaluation",
+        "runtime_estimate_error": estimate_error,
+    }
+
+
+def _runtime_profile_fields(
+    estimate: Dict[str, Any],
+    *,
+    actual_runtime_seconds: float,
+) -> Dict[str, Any]:
+    estimated_runtime = float(estimate.get("estimated_runtime_seconds", np.nan))
+    estimated_evaluations = float(estimate.get("estimated_evaluations", np.nan))
+    fields = dict(estimate)
+    fields.update(
+        {
+            "actual_runtime_seconds": float(actual_runtime_seconds),
+            "runtime_estimate_error_seconds": (
+                float(actual_runtime_seconds - estimated_runtime)
+                if pd.notna(estimated_runtime)
+                else np.nan
+            ),
+            "actual_seconds_per_estimated_evaluation": (
+                float(actual_runtime_seconds / estimated_evaluations)
+                if pd.notna(estimated_evaluations) and estimated_evaluations > 0
+                else np.nan
+            ),
+        }
+    )
+    return fields
+
+
+def _write_error_artifacts(
+    *,
+    output_dir: Path,
+    config: Dict[str, Any],
+    config_path: Optional[Path],
+    classification: str,
+    error: str,
+    estimate: Optional[Dict[str, Any]] = None,
+) -> None:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    estimate = dict(estimate or {})
+    missing_outputs = [
+        filename
+        for filename in REQUIRED_SUCCESS_OUTPUTS
+        if not (output_dir / filename).exists()
+    ]
+    row = {
+        "status": "infrastructure_failure",
+        "classification": classification,
+        "experiment_name": config.get("experiment_name", ""),
+        "strategy_name": config.get("strategy_name", ""),
+        "config_path": str(config_path) if config_path is not None else "",
+        "output_dir": str(output_dir),
+        "benchmark_symbol": str(config.get("benchmark_symbol", "")).upper(),
+        "transaction_cost_bps": config.get("transaction_cost_bps", np.nan),
+        "train_years": config.get("train_years", np.nan),
+        "test_years": config.get("test_years", np.nan),
+        "objective": config.get("objective", ""),
+        "error": error,
+        "missing_required_outputs": ";".join(missing_outputs),
+    }
+    row.update(estimate)
+    pd.DataFrame([row]).to_csv(output_dir / "error_summary.csv", index=False)
+    lines = [
+        f"# Experiment Error: {config.get('experiment_name', output_dir.name)}",
+        "",
+        "This run failed the infrastructure output contract.",
+        "",
+        f"- Classification: `{classification}`",
+        f"- Strategy: `{config.get('strategy_name', '')}`",
+        f"- Config path: `{str(config_path) if config_path is not None else ''}`",
+        f"- Output dir: `{output_dir}`",
+        f"- Error: `{error}`",
+        f"- Missing required outputs: `{';'.join(missing_outputs)}`",
+        "",
+    ]
+    (output_dir / "error_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _fail_experiment_contract(
+    *,
+    output_dir: Path,
+    config: Dict[str, Any],
+    config_path: Optional[Path],
+    classification: str,
+    error: str,
+    estimate: Optional[Dict[str, Any]] = None,
+) -> None:
+    _write_error_artifacts(
+        output_dir=output_dir,
+        config=config,
+        config_path=config_path,
+        classification=classification,
+        error=error,
+        estimate=estimate,
+    )
+    raise ExperimentInfrastructureError(classification, error)
+
+
+def _assert_successful_output_contract(output_dir: Path, config: Dict[str, Any], config_path: Optional[Path], estimate: Dict[str, Any]) -> None:
+    missing = [filename for filename in REQUIRED_SUCCESS_OUTPUTS if not (Path(output_dir) / filename).exists()]
+    if missing:
+        classification = (
+            "empty_stitched_equity"
+            if "stitched_equity.csv" in missing
+            else "benchmark_output_failure"
+            if "same_period_benchmark_summary.csv" in missing
+            else "output_contract_failure"
+        )
+        _fail_experiment_contract(
+            output_dir=Path(output_dir),
+            config=config,
+            config_path=config_path,
+            classification=classification,
+            error=f"Successful run is missing required outputs: {missing}",
+            estimate=estimate,
+        )
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -751,6 +967,25 @@ def _load_price_data(config: Dict[str, Any]) -> pd.DataFrame:
             raise ValueError(f"Downloaded price data is missing required symbols: {sorted(missing)}")
         if not use_synthetic and (market_symbols or rotation_symbols):
             data = data.dropna(subset=[symbol for symbol in required_symbols if symbol in data.columns])
+
+    if use_synthetic and not data_csv:
+        base_history = load_prices(
+            start=str(config["start_date"]),
+            end=str(end_value) if end_value else None,
+            symbols=[synthetic_base_symbol],
+            use_csv_if_exists=bool(config.get("use_csv_if_exists", True)),
+            cache_dir=str(config.get("cache_dir", "./price_cache")),
+            dropna=True,
+            allow_missing_symbols=False,
+            include_ohlc=include_ohlc,
+        )
+        union_index = data.index.union(base_history.index)
+        data = data.reindex(union_index).sort_index()
+        for column in base_history.columns:
+            if column in data.columns:
+                data[column] = data[column].combine_first(base_history[column])
+            else:
+                data[column] = base_history[column].reindex(data.index)
 
     data = data.loc[data.index >= start_date].copy()
     if end_date is not None:
@@ -1885,28 +2120,106 @@ def run_experiment_config(config_path: Path, objective_override: Optional[str] =
     config = load_yaml_file(config_path)
     if objective_override:
         config["objective"] = str(objective_override)
+    if str(config.get("experiment_type", "")).lower() == "voltarget_synthetic_history":
+        from .voltarget_synthetic_history import run_voltarget_synthetic_history
+
+        return run_voltarget_synthetic_history(config, config_path=config_path)
     return run_experiment(config, config_path=config_path)
+
+
+def _experiment_dry_run_row(
+    config: Dict[str, Any],
+    *,
+    config_path: Optional[Path] = None,
+    include_full_experiment_overhead: bool = True,
+) -> Dict[str, Any]:
+    estimate = estimate_experiment_workload(
+        config,
+        include_full_experiment_overhead=include_full_experiment_overhead,
+    )
+    symbols = [str(symbol).upper() for symbol in _as_list(config.get("symbols"))]
+    asset_config = None
+    try:
+        asset_config = _asset_config(config)
+    except Exception:
+        asset_config = None
+    row = {
+        "status": "dry_run",
+        "experiment_name": str(config.get("experiment_name", "")),
+        "strategy_name": str(config.get("strategy_name", "")),
+        "config_path": str(config_path) if config_path is not None else "",
+        "symbols": ";".join(symbols),
+        "benchmark_symbol": str(config.get("benchmark_symbol", "")).upper(),
+        "output_dir": str(config.get("output_dir", "")),
+        "train_years": config.get("train_years", ""),
+        "test_years": config.get("test_years", ""),
+        "objective": str(config.get("objective", "")),
+        "transaction_cost_bps": config.get("transaction_cost_bps", ""),
+        "trade_asset": asset_config.trade_asset if asset_config is not None else "",
+        "primary_signal_asset": asset_config.primary_signal_asset if asset_config is not None else "",
+        "secondary_filter_asset": asset_config.secondary_filter_asset if asset_config is not None else "",
+        "actual_runtime_seconds": 0.0,
+    }
+    row.update(estimate)
+    return row
+
+
+def dry_run_experiment_config(config_path: Path, objective_override: Optional[str] = None) -> Dict[str, Any]:
+    config_path = Path(config_path)
+    config = load_yaml_file(config_path)
+    if objective_override:
+        config["objective"] = str(objective_override)
+    row = _experiment_dry_run_row(config, config_path=config_path)
+    print(pd.DataFrame([row]).to_string(index=False))
+    return row
 
 
 def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -> Dict[str, Any]:
     _require_experiment_fields(config)
+    estimate = estimate_experiment_workload(config, include_full_experiment_overhead=True)
+    started = time.perf_counter()
+    output_dir = Path(config["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     data = _load_price_data(config)
     market_internals_status = _market_internals_run_status(config, data)
     rotation_asset_status = _rotation_asset_status(config, data)
     wf_table, stitched, grid_size = _run_walk_forward(config, data)
     if stitched.empty:
-        raise ValueError(f"Experiment produced no stitched equity: {config['experiment_name']}")
-
-    output_dir = Path(config["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="empty_stitched_equity",
+            error=f"Experiment produced no stitched equity: {config['experiment_name']}",
+            estimate=estimate,
+        )
 
     benchmark_symbol = str(config["benchmark_symbol"]).upper()
-    benchmark_summary, yearly_returns = compare_to_benchmark(
-        stitched,
-        data,
-        benchmark_symbol=benchmark_symbol,
-    )
+    try:
+        benchmark_summary, yearly_returns = compare_to_benchmark(
+            stitched,
+            data,
+            benchmark_symbol=benchmark_symbol,
+        )
+    except Exception as exc:
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="benchmark_output_failure",
+            error=str(exc),
+            estimate=estimate,
+        )
+    if benchmark_summary.empty or yearly_returns.empty:
+        _fail_experiment_contract(
+            output_dir=output_dir,
+            config=config,
+            config_path=config_path,
+            classification="benchmark_output_failure",
+            error="Benchmark comparison produced empty summary/yearly outputs.",
+            estimate=estimate,
+        )
     synthetic_tracking_summary = None
     synthetic_tracking_daily = None
     if bool(config.get("use_synthetic_leverage", False)):
@@ -2014,6 +2327,8 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
         run_config_payload["market_internals_data_status"] = market_internals_status
     if rotation_asset_status is not None:
         run_config_payload["rotation_asset_status"] = rotation_asset_status
+    runtime_profile = _runtime_profile_fields(estimate, actual_runtime_seconds=time.perf_counter() - started)
+    run_config_payload["runtime_profile"] = runtime_profile
     save_run_config(output_dir, run_config_payload)
 
     print_benchmark_summary(benchmark_summary)
@@ -2024,7 +2339,18 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
             stitched=stitched,
             wf_table=wf_table,
         )
+        write_voltarget_fairness_outputs(
+            output_dir=output_dir,
+            stitched=stitched,
+            price_data=data,
+            transaction_cost_bps=float(config.get("transaction_cost_bps", 0.0)),
+            wf_table=wf_table,
+            config=config,
+            trade_asset=_asset_config(config).trade_asset,
+            execution_model=normalize_execution_model(config.get("execution_model", CLOSE_TO_CLOSE_SHIFTED)),
+        )
     generate_experiment_report(output_dir=output_dir, config=run_config_payload, price_data=data)
+    _assert_successful_output_contract(output_dir, config, config_path, estimate)
 
     row = benchmark_summary.iloc[0].to_dict()
     asset_config = _asset_config(config)
@@ -2053,6 +2379,7 @@ def run_experiment(config: Dict[str, Any], config_path: Optional[Path] = None) -
             "worst_year": _worst_year_strategy_return(yearly_returns),
             "return_2022": _year_strategy_return(yearly_returns, 2022),
             "return_2023": _year_strategy_return(yearly_returns, 2023),
+            **runtime_profile,
         }
     )
     return row
@@ -2065,26 +2392,66 @@ def _resolve_config_path(batch_path: Path, value: Any) -> Path:
     return batch_path.parent / candidate
 
 
-def run_batch_config(batch_path: Path, objective_override: Optional[str] = None) -> pd.DataFrame:
+def _batch_entry_config(batch_path: Path, entry: Any, objective_override: Optional[str]) -> tuple[Dict[str, Any], Optional[Path]]:
+    if isinstance(entry, dict):
+        config = dict(entry)
+        if objective_override:
+            config["objective"] = str(objective_override)
+        return config, None
+    config_path = _resolve_config_path(batch_path, entry)
+    config = load_yaml_file(config_path)
+    if objective_override:
+        config["objective"] = str(objective_override)
+    return config, config_path
+
+
+def run_batch_config(
+    batch_path: Path,
+    objective_override: Optional[str] = None,
+    *,
+    max_configs: Optional[int] = None,
+    dry_run: bool = False,
+) -> pd.DataFrame:
     batch_path = Path(batch_path)
     batch = load_yaml_file(batch_path)
     batch_name = str(batch.get("batch_name", batch_path.stem))
     entries = batch.get("configs") or batch.get("experiments")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Batch config must contain a non-empty configs list.")
+    total_configs = len(entries)
+    if max_configs is not None:
+        entries = entries[: max(0, int(max_configs))]
 
     rows: List[Dict[str, Any]] = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            if objective_override:
-                entry = {**entry, "objective": str(objective_override)}
-            rows.append(run_experiment(entry, config_path=None))
-        else:
-            rows.append(run_experiment_config(_resolve_config_path(batch_path, entry), objective_override=objective_override))
-
-    summary = pd.DataFrame(rows)
     output_dir = Path(batch.get("output_dir", Path("outputs") / batch_name))
     output_dir.mkdir(parents=True, exist_ok=True)
+    batch_started = time.perf_counter()
+    if dry_run:
+        for entry in entries:
+            config, config_path = _batch_entry_config(batch_path, entry, objective_override)
+            rows.append(_experiment_dry_run_row(config, config_path=config_path))
+        summary = pd.DataFrame(rows)
+        summary["batch_total_configs"] = total_configs
+        summary["batch_selected_configs"] = len(entries)
+        summary["batch_dry_run"] = True
+        summary.to_csv(output_dir / "batch_dry_run_summary.csv", index=False)
+        print(summary.to_string(index=False))
+        print(f"\nDry-run summary written to: {output_dir / 'batch_dry_run_summary.csv'}")
+        return summary
+
+    for entry in entries:
+        config, config_path = _batch_entry_config(batch_path, entry, objective_override)
+        rows.append(run_experiment(config, config_path=config_path))
+
+    summary = pd.DataFrame(rows)
+    summary["batch_total_configs"] = total_configs
+    summary["batch_selected_configs"] = len(entries)
+    summary["batch_actual_runtime_seconds"] = time.perf_counter() - batch_started
+    if "estimated_runtime_seconds" in summary.columns:
+        summary["batch_estimated_runtime_seconds"] = pd.to_numeric(
+            summary["estimated_runtime_seconds"],
+            errors="coerce",
+        ).sum()
 
     summary.to_csv(output_dir / "batch_summary.csv", index=False)
     summary.sort_values("final_equity_ratio", ascending=False).to_csv(

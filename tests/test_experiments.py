@@ -3,9 +3,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from research.cli import main
+import research.experiments as experiments
+from research.experiments import _load_price_data
 
 
 def _write_prices(path: Path) -> None:
@@ -26,6 +29,31 @@ def _write_prices(path: Path) -> None:
         }
     )
     prices.to_csv(path, index=False)
+
+
+def _write_gate_prices(path: Path) -> None:
+    dates = pd.bdate_range("2020-01-01", "2026-06-12")
+    steps = np.arange(len(dates), dtype=float)
+    qqq_returns = 0.00025 + 0.0020 * np.sin(steps / 31.0)
+    tqqq_returns = 3.0 * qqq_returns - 0.00004
+    prices = pd.DataFrame(
+        {
+            "Date": dates,
+            "TQQQ": 100.0 * np.cumprod(1.0 + tqqq_returns),
+            "QQQ": 100.0 * np.cumprod(1.0 + qqq_returns),
+        }
+    )
+    prices.to_csv(path, index=False)
+
+
+REQUIRED_RUN_CONFIG_OUTPUTS = [
+    "stitched_equity.csv",
+    "walk_forward_windows.csv",
+    "same_period_benchmark_summary.csv",
+    "yearly_returns.csv",
+    "run_config.json",
+    "report.md",
+]
 
 
 def _experiment_config(tmp_path: Path, name: str, output_name: str) -> dict:
@@ -55,6 +83,19 @@ def _experiment_config(tmp_path: Path, name: str, output_name: str) -> dict:
         "output_dir": str(tmp_path / output_name),
         "data_csv": str(data_csv),
     }
+
+
+def _gate_config_for_test(tmp_path: Path, config_name: str) -> Path:
+    data_csv = tmp_path / "gate_prices.csv"
+    if not data_csv.exists():
+        _write_gate_prices(data_csv)
+    source = Path("configs") / config_name
+    config = yaml.safe_load(source.read_text(encoding="utf-8"))
+    config["data_csv"] = str(data_csv)
+    config["output_dir"] = str(tmp_path / config["experiment_name"])
+    config_path = tmp_path / config_name
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return config_path
 
 
 def test_run_config_minimal_synthetic_dataset(tmp_path: Path) -> None:
@@ -125,6 +166,146 @@ def test_run_config_minimal_synthetic_dataset(tmp_path: Path) -> None:
     }
 
 
+def test_run_config_ma_ensemble_produces_required_outputs(tmp_path: Path) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config = _experiment_config(tmp_path, "ma_ensemble_fixture", "ma_ensemble_fixture")
+    config["use_ensemble_wf"] = True
+    config["ensemble_top_k"] = 1
+    config["ensemble_weight_power"] = 2.0
+    config["anti_overfit_validation"] = {"enabled": False}
+    config_path = tmp_path / "ma_ensemble.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    assert main(["run-config", str(config_path)]) == 0
+
+    output_dir = tmp_path / "ma_ensemble_fixture"
+    for filename in [
+        "stitched_equity.csv",
+        "walk_forward_windows.csv",
+        "same_period_benchmark_summary.csv",
+        "yearly_returns.csv",
+        "run_config.json",
+        "report.md",
+    ]:
+        assert (output_dir / filename).exists(), filename
+
+    stitched = pd.read_csv(output_dir / "stitched_equity.csv")
+    benchmark = pd.read_csv(output_dir / "same_period_benchmark_summary.csv")
+    assert not stitched.empty
+    assert benchmark.loc[0, "benchmark_symbol"] == "TQQQ"
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "core_overlay_tqqq_gate.yaml",
+        "core_overlay_with_rebound_gate.yaml",
+        "vol_target_tqqq_gate.yaml",
+    ],
+)
+def test_controlled_gate_configs_produce_required_outputs(tmp_path: Path, config_name: str) -> None:
+    config_path = _gate_config_for_test(tmp_path, config_name)
+    assert main(["run-config", str(config_path)]) == 0
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    output_dir = Path(config["output_dir"])
+    for filename in REQUIRED_RUN_CONFIG_OUTPUTS:
+        assert (output_dir / filename).exists(), filename
+
+
+def test_controlled_gate_configs_do_not_overwrite_full_config_outputs() -> None:
+    pairs = [
+        ("core_overlay_tqqq.yaml", "core_overlay_tqqq_gate.yaml"),
+        ("core_overlay_with_rebound.yaml", "core_overlay_with_rebound_gate.yaml"),
+        ("vol_target_tqqq.yaml", "vol_target_tqqq_gate.yaml"),
+    ]
+    for full_name, gate_name in pairs:
+        full = yaml.safe_load((Path("configs") / full_name).read_text(encoding="utf-8"))
+        gate = yaml.safe_load((Path("configs") / gate_name).read_text(encoding="utf-8"))
+        assert gate["output_dir"].startswith("outputs/controlled_gate/")
+        assert gate["output_dir"] != full["output_dir"]
+        assert gate["strategy_name"] == full["strategy_name"]
+        assert gate["benchmark_symbol"] == "TQQQ"
+        assert gate["transaction_cost_bps"] == 10.0
+        assert gate["train_years"] == 5
+        assert gate["test_years"] == 1
+        assert gate["objective"] == "objective_final_ratio"
+
+
+def test_run_config_dry_run_prints_estimate_without_backtest_outputs(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_path = tmp_path / "dry_run.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_experiment_config(tmp_path, "dry_run", "dry_run_output")),
+        encoding="utf-8",
+    )
+
+    assert main(["run-config", str(config_path), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    assert "estimated_parameter_combinations" in captured.out
+    assert "estimated_runtime_seconds" in captured.out
+    assert not (tmp_path / "dry_run_output" / "stitched_equity.csv").exists()
+
+
+def test_run_config_empty_stitched_equity_writes_error_artifacts(tmp_path: Path, monkeypatch) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config = _experiment_config(tmp_path, "empty_stitched", "empty_stitched")
+    config_path = tmp_path / "empty_stitched.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(
+        experiments,
+        "_run_walk_forward",
+        lambda config, data: (pd.DataFrame(), pd.DataFrame(), 1),
+    )
+
+    assert main(["run-config", str(config_path)]) == 1
+    output_dir = tmp_path / "empty_stitched"
+    error = pd.read_csv(output_dir / "error_summary.csv")
+    assert error.loc[0, "classification"] == "empty_stitched_equity"
+    assert (output_dir / "error_report.md").exists()
+
+
+def test_run_config_benchmark_output_failure_writes_error_artifacts(tmp_path: Path, monkeypatch) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config = _experiment_config(tmp_path, "benchmark_failure", "benchmark_failure")
+    config_path = tmp_path / "benchmark_failure.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    dates = pd.bdate_range("2020-01-01", "2020-01-03")
+    stitched = pd.DataFrame({"equity": [1.0, 1.01, 1.02], "position": [1.0, 1.0, 1.0]}, index=dates)
+    wf_table = pd.DataFrame([{"train_start": "2018-01-01", "test_start": "2020-01-01"}])
+
+    monkeypatch.setattr(experiments, "_run_walk_forward", lambda config, data: (wf_table, stitched, 1))
+    monkeypatch.setattr(
+        experiments,
+        "compare_to_benchmark",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("benchmark failed")),
+    )
+
+    assert main(["run-config", str(config_path)]) == 1
+    error = pd.read_csv(tmp_path / "benchmark_failure" / "error_summary.csv")
+    assert error.loc[0, "classification"] == "benchmark_output_failure"
+
+
+def test_successful_run_config_cannot_pass_with_empty_benchmark_summary(tmp_path: Path, monkeypatch) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config = _experiment_config(tmp_path, "empty_benchmark", "empty_benchmark")
+    config_path = tmp_path / "empty_benchmark.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    dates = pd.bdate_range("2020-01-01", "2020-01-03")
+    stitched = pd.DataFrame({"equity": [1.0, 1.01, 1.02], "position": [1.0, 1.0, 1.0]}, index=dates)
+    wf_table = pd.DataFrame([{"train_start": "2018-01-01", "test_start": "2020-01-01"}])
+
+    monkeypatch.setattr(experiments, "_run_walk_forward", lambda config, data: (wf_table, stitched, 1))
+    monkeypatch.setattr(experiments, "compare_to_benchmark", lambda *args, **kwargs: (pd.DataFrame(), pd.DataFrame()))
+
+    assert main(["run-config", str(config_path)]) == 1
+    error = pd.read_csv(tmp_path / "empty_benchmark" / "error_summary.csv")
+    assert error.loc[0, "classification"] == "benchmark_output_failure"
+    assert not (tmp_path / "empty_benchmark" / "same_period_benchmark_summary.csv").exists()
+
+
 def test_run_config_objective_cli_override(tmp_path: Path) -> None:
     _write_prices(tmp_path / "prices.csv")
     config = _experiment_config(tmp_path, "objective_override", "objective_override")
@@ -173,6 +354,49 @@ def test_run_config_synthetic_leverage_writes_tracking_outputs(tmp_path: Path) -
     assert "max_drawdown_difference" in tracking.columns
 
 
+def test_synthetic_leverage_uses_standalone_base_history_when_combined_cache_is_truncated(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    early_dates = pd.bdate_range("2000-01-03", "2000-03-31")
+    late_dates = pd.bdate_range("2011-01-03", "2011-03-31")
+    pd.DataFrame(
+        {
+            "Date": early_dates,
+            "QQQ": 100.0 + np.arange(len(early_dates), dtype=float),
+        }
+    ).to_csv(cache_dir / "qqq_prices.csv", index=False)
+    pd.DataFrame(
+        {
+            "Date": late_dates,
+            "QQQ": 200.0 + np.arange(len(late_dates), dtype=float),
+            "TQQQ": 50.0 + np.arange(len(late_dates), dtype=float),
+        }
+    ).to_csv(cache_dir / "qqq_tqqq_prices.csv", index=False)
+
+    data = _load_price_data(
+        {
+            "symbols": ["QQQ", "TQQQ"],
+            "start_date": "2000-01-03",
+            "end_date": "2000-03-31",
+            "benchmark_symbol": "TQQQ",
+            "strategy_name": "ma",
+            "cache_dir": str(cache_dir),
+            "download_ohlc": False,
+            "use_synthetic_leverage": True,
+            "synthetic_base_symbol": "QQQ",
+            "synthetic_leverage": 3.0,
+            "synthetic_expense_ratio": 0.0,
+            "synthetic_financing_spread": 0.0,
+        }
+    )
+
+    assert not data.empty
+    assert data.index.min() == early_dates.min()
+    assert data.index.max() == early_dates.max()
+    assert "TQQQ" in data.columns
+    assert data["TQQQ"].notna().all()
+
+
 def test_run_batch_writes_rankings(tmp_path: Path) -> None:
     _write_prices(tmp_path / "prices.csv")
     config_paths = []
@@ -213,6 +437,41 @@ def test_run_batch_writes_rankings(tmp_path: Path) -> None:
         ranked["final_equity_ratio"],
         reverse=True,
     )
+
+
+def test_run_batch_dry_run_respects_max_configs_without_strategy_outputs(tmp_path: Path, capsys) -> None:
+    _write_prices(tmp_path / "prices.csv")
+    config_paths = []
+    for name in ["first", "second", "third"]:
+        config_path = tmp_path / f"{name}.yaml"
+        config_path.write_text(
+            yaml.safe_dump(_experiment_config(tmp_path, name, name)),
+            encoding="utf-8",
+        )
+        config_paths.append(str(config_path))
+
+    batch_path = tmp_path / "batch_dry.yaml"
+    batch_path.write_text(
+        yaml.safe_dump(
+            {
+                "batch_name": "dry_batch",
+                "configs": config_paths,
+                "output_dir": str(tmp_path / "batch_dry"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-batch", str(batch_path), "--dry-run", "--max-configs", "2"]) == 0
+
+    captured = capsys.readouterr()
+    assert "dry_run" in captured.out
+    dry_summary = pd.read_csv(tmp_path / "batch_dry" / "batch_dry_run_summary.csv")
+    assert len(dry_summary) == 2
+    assert set(dry_summary["experiment_name"]) == {"first", "second"}
+    assert dry_summary["batch_total_configs"].iloc[0] == 3
+    assert dry_summary["batch_selected_configs"].iloc[0] == 2
+    assert not (tmp_path / "first" / "stitched_equity.csv").exists()
 
 
 def test_run_config_core_overlay_minimal_dataset(tmp_path: Path) -> None:
@@ -301,6 +560,8 @@ def test_run_config_vol_target_minimal_dataset(tmp_path: Path) -> None:
     output_dir = tmp_path / "vol_target"
     assert (output_dir / "drawdown_chart_data.csv").exists()
     assert (output_dir / "vol_target_acceptance_summary.csv").exists()
+    assert (output_dir / "constant_leverage_benchmark_summary.csv").exists()
+    assert (output_dir / "voltarget_fairness_report.md").exists()
     stitched = pd.read_csv(output_dir / "stitched_equity.csv")
     assert "target_exposure" in stitched.columns
     assert "realized_ann_vol" in stitched.columns

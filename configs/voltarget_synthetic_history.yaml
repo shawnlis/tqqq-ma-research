@@ -1,0 +1,72 @@
+experiment_name: voltarget_synthetic_history
+experiment_type: voltarget_synthetic_history
+output_dir: outputs/voltarget_synthetic_history
+
+symbols: [QQQ, TQQQ, CASH]
+benchmark_symbol: TQQQ
+strategy_name: vol_target
+objective: objective_final_ratio
+transaction_cost_bps: 25.0
+train_years: 5
+test_years: 1
+
+# Match the targeted open-questions VolTarget setup.
+target_ann_vol_values: [0.60]
+max_exposure_values: [1.00, 1.25, 1.50, 2.00]
+vol_target_params:
+  realized_vol_window: 20
+  min_exposure: 0.25
+  trend_window: 150
+  momentum_window: 63
+  trend_multiplier_below_ma: 0.50
+  momentum_boost: 1.15
+  crash_vol_cutoff: 0.050
+  crash_exposure: 0.25
+  risk_off_symbol: CASH
+  risk_off_weight: 0.0
+
+use_synthetic_leverage: true
+synthetic_base_symbol: QQQ
+synthetic_target_symbol: TQQQ
+real_leveraged_symbol: TQQQ
+synthetic_leverage: 3.0
+synthetic_expense_ratio: 0.0095
+synthetic_financing_spread: 0.0
+
+synthetic_periods:
+  - label: real_tqqq_period
+    start_date: "2011-01-01"
+    end_date:
+    use_synthetic: true
+    train_years: 5
+    test_years: 1
+  - label: synthetic_full_qqq_history
+    start_date: "1999-03-10"
+    end_date:
+    use_synthetic: true
+    train_years: 5
+    test_years: 1
+  - label: synthetic_2000_2002
+    start_date: "1999-03-10"
+    end_date: "2002-12-31"
+    use_synthetic: true
+    train_years: 1
+    test_years: 1
+  - label: synthetic_2008
+    start_date: "2003-01-01"
+    end_date: "2008-12-31"
+    use_synthetic: true
+    train_years: 5
+    test_years: 1
+  - label: synthetic_2020_crash_rebound
+    start_date: "2015-01-01"
+    end_date: "2020-12-31"
+    use_synthetic: true
+    train_years: 5
+    test_years: 1
+  - label: synthetic_2022
+    start_date: "2017-01-01"
+    end_date: "2022-12-31"
+    use_synthetic: true
+    train_years: 5
+    test_years: 1

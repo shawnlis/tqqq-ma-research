@@ -1,0 +1,72 @@
+tournament_name: voltarget_stage3_robust_alpha
+benchmark_symbol: TQQQ
+output_dir: outputs/tournament_voltarget_stage3
+max_estimated_runtime_seconds: 3600
+report_type: voltarget_stage3_robust_alpha
+voltarget_stage3_report: true
+execution_models:
+  - close_to_close_shifted
+walk_forward_variants:
+  - name: standard_5y_1y
+    train_years: 5
+    test_years: 1
+  - name: alternate_3y_1y
+    train_years: 3
+    test_years: 1
+  - name: alternate_7y_1y
+    train_years: 7
+    test_years: 1
+cost_scenarios: [10.0, 25.0, 50.0]
+strategies:
+  - family: VolTargetTQQQStrategy
+    category: tqqq_voltarget
+    config: configs/vol_target_tqqq.yaml
+    overrides:
+      experiment_name: stage3_vol_target_tqqq_robust_alpha
+      output_dir: outputs/tournament_voltarget_stage3/experiments/stage3_vol_target_tqqq
+      objective: objective_final_ratio
+      execution_model: close_to_close_shifted
+      parameter_grid:
+        target_ann_vol: [0.60, 0.75, 0.90]
+        realized_vol_window: [10, 20, 40]
+        min_exposure: [0.25, 0.50]
+        max_exposure: [1.50, 2.00]
+        trend_window: [150, 200]
+        momentum_window: [20, 63]
+        trend_multiplier_below_ma: [0.50]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.050]
+        crash_exposure: [0.25, 0.50]
+        risk_off_symbol: [CASH]
+        risk_off_weight: [0.0]
+
+  - family: VolTarget + DrawdownGovernor comparator
+    category: tqqq_voltarget_governor
+    config: configs/vol_target_governor.yaml
+    overrides:
+      experiment_name: stage3_vol_target_governor_comparator
+      output_dir: outputs/tournament_voltarget_stage3/experiments/stage3_vol_target_governor_comparator
+      objective: objective_final_ratio
+      execution_model: close_to_close_shifted
+      parameter_grid:
+        target_ann_vol: [0.75]
+        realized_vol_window: [20]
+        min_exposure: [0.50]
+        max_exposure: [2.00]
+        trend_window: [150]
+        momentum_window: [63]
+        trend_multiplier_below_ma: [0.50]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.050]
+        crash_exposure: [0.25]
+        risk_off_symbol: [CASH]
+        risk_off_weight: [0.0]
+        use_rebound_module: [false]
+        use_drawdown_governor: [true]
+        portfolio_dd_trigger: [-0.30]
+        qqq_dd_trigger: [-0.15]
+        reduced_exposure: [0.50]
+        recovery_ma_window: [20]
+        recovery_momentum_window: [10]
+        recovery_momentum_threshold: [0.05]
+        max_days_reduced: [40]

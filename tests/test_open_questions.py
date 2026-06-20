@@ -136,3 +136,107 @@ def test_run_open_questions_pack_writes_question_outputs(tmp_path: Path) -> None
     q8 = pd.read_csv(output_dir / "question_8_overfit.csv")
     assert "validation_summary" in set(q8["record_type"].dropna())
     assert (output_dir / "question_8_validation_artifacts" / "validation_summary.csv").exists()
+
+
+def test_run_open_questions_dry_run_writes_estimates_without_case_outputs(tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "open_questions_dry.yaml"
+    output_dir = tmp_path / "open_questions_dry_out"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "pack_name": "dry_open_questions",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(output_dir),
+                "start_date": "2011-01-01",
+                "end_date": "2019-12-31",
+                "run_questions": [1],
+                "core_exposure_values": [0.25, 0.50, 1.0],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-open-questions", str(config_path), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    assert "dry_run" in captured.out
+    summary = pd.read_csv(output_dir / "open_questions_summary.csv")
+    assert summary.loc[summary["question_id"] == 1, "dry_run_experiment_count"].iloc[0] == 3
+    q1 = pd.read_csv(output_dir / "question_1_exposure_floor.csv")
+    assert set(q1["status"]) == {"dry_run"}
+    assert "estimated_runtime_seconds" in q1.columns
+    assert not (output_dir / "case_outputs").exists()
+
+
+def test_run_open_questions_only_question_filter(tmp_path: Path) -> None:
+    config_path = tmp_path / "open_questions_only.yaml"
+    output_dir = tmp_path / "open_questions_only_out"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "pack_name": "only_open_questions",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(output_dir),
+                "start_date": "2011-01-01",
+                "end_date": "2019-12-31",
+                "run_questions": [1],
+                "synthetic_periods": [
+                    {
+                        "label": "synthetic_2000_2002",
+                        "start_date": "1999-03-10",
+                        "end_date": "2002-12-31",
+                        "use_synthetic": True,
+                        "train_years": 1,
+                        "test_years": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-open-questions", str(config_path), "--only", "question_7", "--dry-run"]) == 0
+
+    summary = pd.read_csv(output_dir / "open_questions_summary.csv")
+    q7 = summary.loc[summary["question_id"] == 7].iloc[0]
+    assert q7["dry_run_experiment_count"] == 1
+    assert q7["experiment_count"] == 1
+    skipped = summary.loc[summary["question_id"] != 7]
+    assert set(skipped["answer"]) == {"inconclusive"}
+    assert set(pd.read_csv(output_dir / "question_1_exposure_floor.csv")["status"]) == {"skipped"}
+    assert set(pd.read_csv(output_dir / "question_7_synthetic_history.csv")["status"]) == {"dry_run"}
+
+
+def test_run_open_questions_max_configs_skips_after_limit(tmp_path: Path) -> None:
+    data_csv = tmp_path / "prices.csv"
+    _write_open_question_prices(data_csv)
+    config_path = tmp_path / "open_questions_max.yaml"
+    output_dir = tmp_path / "open_questions_max_out"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "pack_name": "max_open_questions",
+                "benchmark_symbol": "TQQQ",
+                "output_dir": str(output_dir),
+                "data_csv": str(data_csv),
+                "start_date": "2011-01-01",
+                "end_date": "2019-12-31",
+                "transaction_cost_bps": 0.0,
+                "train_years": 5,
+                "test_years": 1,
+                "run_questions": [1],
+                "core_exposure_values": [0.25, 0.50, 0.75, 1.0],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["run-open-questions", str(config_path), "--max-configs", "2"]) == 0
+
+    q1 = pd.read_csv(output_dir / "question_1_exposure_floor.csv")
+    assert int((q1["status"] == "ok").sum()) == 2
+    assert int((q1["status"] == "skipped_max_configs").sum()) == 2
+    summary = pd.read_csv(output_dir / "open_questions_summary.csv")
+    row = summary.loc[summary["question_id"] == 1].iloc[0]
+    assert row["successful_experiment_count"] == 2
+    assert row["skipped_experiment_count"] == 2

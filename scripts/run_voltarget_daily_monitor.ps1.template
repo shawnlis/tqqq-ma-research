@@ -1,0 +1,130 @@
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$LogDir = Join-Path $RepoRoot "logs\voltarget_monitor"
+$SignalDir = Join-Path $RepoRoot "outputs\live_signal"
+$SchedulerStatusPath = Join-Path $SignalDir "latest_scheduler_status.json"
+$AutomationStatusPath = Join-Path $SignalDir "latest_automation_status.json"
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SignalDir | Out-Null
+
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$LogPath = Join-Path $LogDir "voltarget_daily_$Timestamp.log"
+$Steps = New-Object System.Collections.Generic.List[object]
+$HardFailure = $false
+
+function Write-Log {
+    param([string]$Message)
+    $Line = "$(Get-Date -Format o) $Message"
+    Add-Content -LiteralPath $LogPath -Value $Line
+    Write-Host $Line
+}
+
+function Add-Step {
+    param([string]$Name, [string]$Status, [string]$Detail)
+    $Steps.Add([ordered]@{
+        name = $Name
+        status = $Status
+        detail = $Detail
+    }) | Out-Null
+}
+
+function Write-SchedulerStatus {
+    param([string]$Status, [string]$Message)
+    $Payload = [ordered]@{
+        generated_at = (Get-Date).ToUniversalTime().ToString("o")
+        status = $Status
+        message = $Message
+        log_file = $LogPath
+        paper_trading_only = $true
+        no_auto_trading = $true
+        no_broker_integration = $true
+        steps = $Steps
+    }
+    if (Test-Path -LiteralPath $AutomationStatusPath) {
+        try {
+            $AutomationStatus = Get-Content -Raw -LiteralPath $AutomationStatusPath | ConvertFrom-Json
+            $Freshness = $AutomationStatus.steps.daily_monitor.data_freshness_check
+            $Refresh = $AutomationStatus.steps.daily_monitor.market_data_refresh
+            if ($null -ne $Freshness) {
+                $Payload["data_freshness_status"] = $Freshness.status
+                $Payload["latest_price_date"] = $Freshness.latest_price_date
+                $Payload["calendar_stale_days"] = $Freshness.calendar_stale_days
+                $Payload["trading_stale_days"] = $Freshness.trading_stale_days
+                $Payload["stale_warning_days"] = $Freshness.stale_warning_days
+            }
+            if ($null -ne $Refresh) {
+                $Payload["refresh_success"] = $Refresh.refresh_success
+                $Payload["last_refresh_attempt"] = $Refresh.generated_at
+            }
+        } catch {
+            $Payload["freshness_status_error"] = $_.Exception.Message
+        }
+    }
+    $Payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $SchedulerStatusPath -Encoding UTF8
+}
+
+function Invoke-PythonLogged {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & python @Arguments 2>&1 | ForEach-Object {
+            $Line = $_.ToString()
+            Add-Content -LiteralPath $LogPath -Value $Line
+            Write-Host $Line
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    return $ExitCode
+}
+
+function Invoke-MonitorStep {
+    param(
+        [string]$Name,
+        [string[]]$Arguments,
+        [bool]$Required = $true
+    )
+    Write-Log "START $Name"
+    if ($env:VOLTARGET_MONITOR_SIMULATE -eq "1") {
+        Add-Step -Name $Name -Status "simulated" -Detail ("python " + ($Arguments -join " "))
+        Write-Log "SIMULATED $Name"
+        return
+    }
+    $ExitCode = Invoke-PythonLogged -Arguments $Arguments
+    if ($ExitCode -ne 0) {
+        Add-Step -Name $Name -Status "failed" -Detail "exit_code=$ExitCode"
+        Write-Log "FAILED $Name exit_code=$ExitCode"
+        if ($Required) {
+            throw "$Name failed with exit code $ExitCode"
+        }
+    } else {
+        Add-Step -Name $Name -Status "ok" -Detail "exit_code=0"
+        Write-Log "OK $Name"
+    }
+}
+
+try {
+    Set-Location -LiteralPath $RepoRoot
+    Write-Log "PAPER MONITORING ONLY. NO AUTO-TRADING. NO BROKER API CALLS."
+    Write-Log "RepoRoot=$RepoRoot"
+
+    Invoke-MonitorStep -Name "automated_paper_monitor" -Arguments @(
+        "-m", "research.cli", "run-automated-voltarget-paper-monitor",
+        "--config", "configs\voltarget_live_monitor.yaml"
+    ) -Required $true
+
+    Write-SchedulerStatus -Status "ok" -Message "Daily VolTarget paper monitor completed."
+    exit 0
+} catch {
+    $HardFailure = $true
+    Write-Log "HARD FAILURE $($_.Exception.Message)"
+    Write-SchedulerStatus -Status "failed" -Message $_.Exception.Message
+    exit 1
+}

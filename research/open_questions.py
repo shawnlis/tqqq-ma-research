@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -9,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .anti_overfit import run_anti_overfit_validation
-from .experiments import _load_price_data, _run_walk_forward, load_yaml_file
+from .experiments import _load_price_data, _run_walk_forward, estimate_experiment_workload, load_yaml_file
 from .reports import _markdown_table, compare_to_benchmark, save_run_config
 
 
@@ -142,8 +143,76 @@ def _question_rows_to_frame(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame([{"status": "no_result"}])
 
 
+def _profile_rollup(frame: pd.DataFrame) -> Dict[str, Any]:
+    if frame.empty:
+        return {
+            "experiment_count": 0,
+            "successful_experiment_count": 0,
+            "dry_run_experiment_count": 0,
+            "skipped_experiment_count": 0,
+            "estimated_parameter_combinations": 0,
+            "estimated_walk_forward_windows": 0,
+            "estimated_evaluations": 0,
+            "estimated_runtime_seconds": 0.0,
+            "actual_runtime_seconds": 0.0,
+        }
+    statuses = frame.get("status", pd.Series(dtype=str)).astype(str)
+    return {
+        "experiment_count": int(len(frame)),
+        "successful_experiment_count": int((statuses == "ok").sum()),
+        "dry_run_experiment_count": int((statuses == "dry_run").sum()),
+        "skipped_experiment_count": int((statuses == "skipped_max_configs").sum()),
+        "estimated_parameter_combinations": float(
+            pd.to_numeric(frame.get("estimated_parameter_combinations", pd.Series(dtype=float)), errors="coerce").sum()
+        ),
+        "estimated_walk_forward_windows": float(
+            pd.to_numeric(frame.get("estimated_walk_forward_windows", pd.Series(dtype=float)), errors="coerce").sum()
+        ),
+        "estimated_evaluations": float(
+            pd.to_numeric(frame.get("estimated_evaluations", pd.Series(dtype=float)), errors="coerce").sum()
+        ),
+        "estimated_runtime_seconds": float(
+            pd.to_numeric(frame.get("estimated_runtime_seconds", pd.Series(dtype=float)), errors="coerce").sum()
+        ),
+        "actual_runtime_seconds": float(
+            pd.to_numeric(frame.get("actual_runtime_seconds", pd.Series(dtype=float)), errors="coerce").sum()
+        ),
+    }
+
+
+def _parse_question_selector(value: Any) -> int:
+    text = str(value).strip().lower().replace("-", "_")
+    if text.startswith("question_"):
+        text = text.split("question_", 1)[1]
+    elif text.startswith("q") and text[1:].isdigit():
+        text = text[1:]
+    question_id = int(text)
+    if question_id not in QUESTION_OUTPUTS:
+        raise ValueError(f"Unknown open question selector: {value}")
+    return question_id
+
+
+def _parse_question_selectors(values: Optional[Sequence[Any]]) -> Optional[List[int]]:
+    if values is None:
+        return None
+    out: List[int] = []
+    for value in values:
+        question_id = _parse_question_selector(value)
+        if question_id not in out:
+            out.append(question_id)
+    return out
+
+
 class OpenQuestionsExperimentPack:
-    def __init__(self, pack: Dict[str, Any], config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        pack: Dict[str, Any],
+        config_path: Optional[Path] = None,
+        *,
+        max_configs: Optional[int] = None,
+        dry_run: bool = False,
+        only_questions: Optional[Sequence[Any]] = None,
+    ):
         self.pack = copy.deepcopy(pack)
         self.config_path = Path(config_path) if config_path is not None else None
         self.pack_name = str(self.pack.get("pack_name", self.pack.get("experiment_pack_name", "open_questions")))
@@ -151,13 +220,20 @@ class OpenQuestionsExperimentPack:
         self.benchmark_symbol = str(self.pack.get("benchmark_symbol", "TQQQ")).upper()
         self.question_frames: Dict[int, pd.DataFrame] = {}
         self.summary_rows: List[Dict[str, Any]] = []
+        self.max_configs = None if max_configs is None else max(0, int(max_configs))
+        self.dry_run = bool(dry_run)
+        self.only_questions = _parse_question_selectors(only_questions)
+        self.configs_started = 0
 
     def run(self) -> pd.DataFrame:
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        run_questions = {
-            int(value)
-            for value in _as_list(self.pack.get("run_questions"), range(1, 9))
-        }
+        if self.only_questions is None:
+            run_questions = {
+                int(value)
+                for value in _as_list(self.pack.get("run_questions"), range(1, 9))
+            }
+        else:
+            run_questions = set(self.only_questions)
 
         runners = {
             1: self._question_1_exposure_floor,
@@ -175,6 +251,7 @@ class OpenQuestionsExperimentPack:
                 summary = _answer_summary(question_id, frame.to_dict("records"), "inconclusive", "Question skipped by config.")
             else:
                 frame, summary = runner()
+            summary.update(_profile_rollup(frame))
             self.question_frames[question_id] = frame
             self.summary_rows.append(summary)
             frame.to_csv(self.output_dir / QUESTION_OUTPUTS[question_id], index=False)
@@ -188,9 +265,14 @@ class OpenQuestionsExperimentPack:
                 "command": "run-open-questions",
                 "config_path": str(self.config_path) if self.config_path is not None else None,
                 "pack_name": self.pack_name,
+                "dry_run": self.dry_run,
+                "max_configs": self.max_configs,
+                "only_questions": self.only_questions,
                 **self.pack,
             },
         )
+        if self.dry_run:
+            self._print_dry_run_cases()
         self._print_terminal_summary(summary_df)
         return summary_df
 
@@ -269,6 +351,7 @@ class OpenQuestionsExperimentPack:
     ) -> CaseResult:
         compare_symbol = str(compare_symbol or self.benchmark_symbol).upper()
         extra = extra or {}
+        estimate = estimate_experiment_workload(config, include_full_experiment_overhead=False)
         base_row = {
             "question_id": question_id,
             "question": QUESTION_TEXT[question_id],
@@ -280,8 +363,37 @@ class OpenQuestionsExperimentPack:
             "transaction_cost_bps": config.get("transaction_cost_bps", np.nan),
             "train_years": config.get("train_years", np.nan),
             "test_years": config.get("test_years", np.nan),
+            "symbols": ";".join(str(symbol).upper() for symbol in config.get("symbols", [])),
+            "output_dir": str(config.get("output_dir", "")),
+            "estimated_parameter_combinations": estimate.get("estimated_parameter_combinations", 0),
+            "estimated_walk_forward_windows": estimate.get("estimated_walk_forward_windows", 0),
+            "estimated_evaluations": estimate.get("estimated_evaluations", 0),
+            "estimated_runtime_seconds": estimate.get("estimated_runtime_seconds", np.nan),
+            "runtime_estimate_error": estimate.get("runtime_estimate_error", ""),
             **extra,
         }
+        if self.dry_run:
+            row = {
+                **base_row,
+                "status": "dry_run",
+                "error": "",
+                "grid_size": estimate.get("estimated_parameter_combinations", 0),
+                "walk_forward_windows": estimate.get("estimated_walk_forward_windows", 0),
+                "actual_runtime_seconds": 0.0,
+            }
+            return CaseResult(row, config, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        if self.max_configs is not None and self.configs_started >= self.max_configs:
+            row = {
+                **base_row,
+                "status": "skipped_max_configs",
+                "error": f"max_configs limit reached: {self.max_configs}",
+                "grid_size": estimate.get("estimated_parameter_combinations", 0),
+                "walk_forward_windows": estimate.get("estimated_walk_forward_windows", 0),
+                "actual_runtime_seconds": 0.0,
+            }
+            return CaseResult(row, config, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        self.configs_started += 1
+        started = time.perf_counter()
         try:
             data = _load_price_data(config)
             wf_table, stitched, grid_size = _run_walk_forward(config, data)
@@ -308,7 +420,14 @@ class OpenQuestionsExperimentPack:
                     "total_turnover": _safe_float(stitched["turnover"].sum()) if "turnover" in stitched.columns else np.nan,
                     "total_cost": _safe_float(stitched["cost"].sum()) if "cost" in stitched.columns else np.nan,
                     "rebound_year_capture": summary.iloc[0].get("average_relative_return_in_rebound_years", np.nan),
+                    "actual_runtime_seconds": time.perf_counter() - started,
                 }
+            )
+            estimated_evaluations = _safe_float(row.get("estimated_evaluations"))
+            row["actual_seconds_per_estimated_evaluation"] = (
+                _safe_float(row["actual_runtime_seconds"]) / estimated_evaluations
+                if pd.notna(estimated_evaluations) and estimated_evaluations > 0
+                else np.nan
             )
             return CaseResult(row, config, data, wf_table, stitched, summary, yearly)
         except Exception as exc:
@@ -318,6 +437,7 @@ class OpenQuestionsExperimentPack:
                 "error": str(exc),
                 "final_equity_ratio": np.nan,
                 "strategy_max_dd": np.nan,
+                "actual_runtime_seconds": time.perf_counter() - started,
             }
             return CaseResult(row, config, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
@@ -949,10 +1069,52 @@ class OpenQuestionsExperimentPack:
         for _, row in summary_df.iterrows():
             ratio = _safe_float(row.get("final_equity_ratio_versus_tqqq"))
             ratio_text = "n/a" if pd.isna(ratio) else f"{ratio:.6f}"
-            print(f"Q{int(row['question_id'])}: {row['answer']} | best={row.get('best_candidate_config', '')} | ratio={ratio_text}")
+            dry_value = _safe_float(row.get("dry_run_experiment_count", 0))
+            skipped_value = _safe_float(row.get("skipped_experiment_count", 0))
+            experiment_value = _safe_float(row.get("experiment_count", 0))
+            dry_count = 0 if pd.isna(dry_value) else int(dry_value)
+            skipped_count = 0 if pd.isna(skipped_value) else int(skipped_value)
+            experiment_count = 0 if pd.isna(experiment_value) else int(experiment_value)
+            print(
+                f"Q{int(row['question_id'])}: {row['answer']} | best={row.get('best_candidate_config', '')} "
+                f"| ratio={ratio_text} | experiments={experiment_count} | dry_run={dry_count} | skipped={skipped_count}"
+            )
+
+    def _print_dry_run_cases(self) -> None:
+        frames = [frame for frame in self.question_frames.values() if not frame.empty]
+        if not frames:
+            return
+        cases = pd.concat(frames, ignore_index=True, sort=False)
+        columns = [
+            "question_id",
+            "test_name",
+            "strategy_name",
+            "symbols",
+            "output_dir",
+            "estimated_parameter_combinations",
+            "estimated_walk_forward_windows",
+            "estimated_evaluations",
+            "estimated_runtime_seconds",
+            "status",
+        ]
+        available = [column for column in columns if column in cases.columns]
+        print("\n=== Open questions dry-run cases ===")
+        print(cases[available].to_string(index=False))
 
 
-def run_open_questions_config(config_path: Path) -> pd.DataFrame:
+def run_open_questions_config(
+    config_path: Path,
+    *,
+    max_configs: Optional[int] = None,
+    dry_run: bool = False,
+    only_questions: Optional[Sequence[Any]] = None,
+) -> pd.DataFrame:
     config_path = Path(config_path)
     pack = load_yaml_file(config_path)
-    return OpenQuestionsExperimentPack(pack, config_path=config_path).run()
+    return OpenQuestionsExperimentPack(
+        pack,
+        config_path=config_path,
+        max_configs=max_configs,
+        dry_run=dry_run,
+        only_questions=only_questions,
+    ).run()

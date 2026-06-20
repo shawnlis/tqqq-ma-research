@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .baseline_gate import baseline_acceptance_warning, enforce_baseline_gate
 from .experiments import load_yaml_file
 from .reports import _markdown_table
 
@@ -391,14 +392,30 @@ def _strategy_groups(variant_results: pd.DataFrame) -> Iterable[Tuple[Tuple[Any,
     yield from variant_results.groupby(group_cols, dropna=False)
 
 
-def extract_final_candidates(tournament_dir: Path) -> pd.DataFrame:
+def extract_final_candidates(
+    tournament_dir: Path,
+    *,
+    accept_baseline_regression: bool = False,
+) -> pd.DataFrame:
+    enforce_baseline_gate(
+        accept_baseline_regression=accept_baseline_regression,
+        action="extracting final candidates",
+    )
     tournament_dir = Path(tournament_dir)
+    summary_path = tournament_dir / "tournament_summary.csv"
     variant_results_path = tournament_dir / "tournament_variant_results.csv"
+    if not summary_path.exists():
+        raise FileNotFoundError(
+            f"Missing completed tournament summary: {summary_path}. "
+            "Run a successful full tournament before extracting candidates."
+        )
     if not variant_results_path.exists():
         raise FileNotFoundError(f"Missing tournament variant results: {variant_results_path}")
 
     variant_results = pd.read_csv(variant_results_path)
-    summary = _read_csv(tournament_dir / "tournament_summary.csv")
+    summary = _read_csv(summary_path)
+    if summary.empty:
+        raise ValueError(f"Tournament summary is empty: {summary_path}")
     summary_index: Dict[Tuple[str, str, str, str], pd.Series] = {}
     if not summary.empty:
         for _, row in summary.iterrows():
@@ -477,52 +494,65 @@ def _write_candidate_report(
         "- Parameter-stability neighborhood median final_equity_ratio must be at least 0.95.",
         "- No single year may contribute more than 60% of positive excess return.",
         "",
-        "## Final Candidates",
-        _markdown_table(
-            candidates,
-            [
-                "family",
-                "standard_final_equity_ratio",
-                "worst_alternate_final_equity_ratio",
-                "cost_50_final_equity_ratio",
-                "drawdown_gap_vs_benchmark",
-                "parameter_stability_neighborhood_median_final_equity_ratio",
-                "single_year_excess_return_share",
-            ],
-            max_rows=50,
-        ),
-        "",
-        "## Rejection Summary",
-        _markdown_table(reason_counts, max_rows=20),
-        "",
-        "## Rejected Strategies",
-        _markdown_table(
-            rejected,
-            [
-                "family",
-                "primary_rejection_reason",
-                "rejection_details",
-                "standard_final_equity_ratio",
-                "worst_alternate_final_equity_ratio",
-                "cost_50_final_equity_ratio",
-                "drawdown_gap_vs_benchmark",
-            ],
-            max_rows=100,
-        ),
-        "",
-        "## Artifact Coverage",
-        _markdown_table(
-            all_results,
-            [
-                "family",
-                "parameter_stability_source",
-                "yearly_returns_source",
-                "primary_rejection_reason",
-            ],
-            max_rows=100,
-        ),
-        "",
     ]
+    baseline_warning = baseline_acceptance_warning()
+    if baseline_warning:
+        lines.extend(
+            [
+                "## Baseline Compatibility Warning",
+                baseline_warning,
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Final Candidates",
+            _markdown_table(
+                candidates,
+                [
+                    "family",
+                    "standard_final_equity_ratio",
+                    "worst_alternate_final_equity_ratio",
+                    "cost_50_final_equity_ratio",
+                    "drawdown_gap_vs_benchmark",
+                    "parameter_stability_neighborhood_median_final_equity_ratio",
+                    "single_year_excess_return_share",
+                ],
+                max_rows=50,
+            ),
+            "",
+            "## Rejection Summary",
+            _markdown_table(reason_counts, max_rows=20),
+            "",
+            "## Rejected Strategies",
+            _markdown_table(
+                rejected,
+                [
+                    "family",
+                    "primary_rejection_reason",
+                    "rejection_details",
+                    "standard_final_equity_ratio",
+                    "worst_alternate_final_equity_ratio",
+                    "cost_50_final_equity_ratio",
+                    "drawdown_gap_vs_benchmark",
+                ],
+                max_rows=100,
+            ),
+            "",
+            "## Artifact Coverage",
+            _markdown_table(
+                all_results,
+                [
+                    "family",
+                    "parameter_stability_source",
+                    "yearly_returns_source",
+                    "primary_rejection_reason",
+                ],
+                max_rows=100,
+            ),
+            "",
+        ]
+    )
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
 

@@ -1,0 +1,89 @@
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$LogDir = Join-Path $RepoRoot "logs\voltarget_monitor"
+$SignalDir = Join-Path $RepoRoot "outputs\live_signal"
+$LedgerPath = Join-Path $RepoRoot "data\paper_trading\voltarget_paper_trades.csv"
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SignalDir | Out-Null
+
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$LogPath = Join-Path $LogDir "voltarget_weekly_$Timestamp.log"
+
+function Write-Log {
+    param([string]$Message)
+    $Line = "$(Get-Date -Format o) $Message"
+    Add-Content -LiteralPath $LogPath -Value $Line
+    Write-Host $Line
+}
+
+function Invoke-PythonCaptured {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Output = & python @Arguments 2>&1
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    $Text = ($Output | ForEach-Object { $_.ToString() }) -join "`n"
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Text = $Text
+    }
+}
+
+function Invoke-PythonLogged {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & python @Arguments 2>&1 | ForEach-Object {
+            $Line = $_.ToString()
+            Add-Content -LiteralPath $LogPath -Value $Line
+            Write-Host $Line
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    return $ExitCode
+}
+
+try {
+    Set-Location -LiteralPath $RepoRoot
+    Write-Log "PAPER MONITORING ONLY. NO AUTO-TRADING. NO BROKER API CALLS."
+
+    $HelpResult = Invoke-PythonCaptured -Arguments @("-m", "research.cli", "--help")
+    if ($HelpResult.ExitCode -ne 0) {
+        throw "research.cli --help failed with exit code $($HelpResult.ExitCode)"
+    }
+    $HelpText = $HelpResult.Text
+    if ($HelpText -notmatch "weekly-voltarget-review") {
+        Write-Log "WARNING weekly-voltarget-review CLI is not implemented. Weekly review skipped gracefully."
+        exit 0
+    }
+
+    if (-not (Test-Path -LiteralPath $LedgerPath)) {
+        Write-Log "WARNING ledger missing: $LedgerPath. Weekly review may classify validation as degraded."
+    }
+
+    $ExitCode = Invoke-PythonLogged -Arguments @(
+        "-m", "research.cli", "weekly-voltarget-review",
+        "--signal-dir", "outputs\live_signal",
+        "--ledger", "data\paper_trading\voltarget_paper_trades.csv",
+        "--output-dir", "outputs\weekly_review"
+    )
+    if ($ExitCode -ne 0) {
+        throw "weekly-voltarget-review failed with exit code $ExitCode"
+    }
+    exit 0
+} catch {
+    Write-Log "HARD FAILURE $($_.Exception.Message)"
+    exit 1
+}

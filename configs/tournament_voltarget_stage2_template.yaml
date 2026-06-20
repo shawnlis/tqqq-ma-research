@@ -1,0 +1,58 @@
+# Template only. Do not run this file directly.
+#
+# After Stage 1 completes, copy this file to:
+#   configs/tournament_voltarget_stage2.yaml
+#
+# Then replace the parameter placeholders below with the Stage 1 winner and
+# a narrow local neighborhood. The template intentionally has no active
+# `strategies` list, so batch/tournament commands cannot run it accidentally.
+
+tournament_name: voltarget_stage2_template
+template_only: true
+benchmark_symbol: TQQQ
+output_dir: outputs/tournament_voltarget_stage2
+max_estimated_runtime_seconds: 3600
+report_type: voltarget_stage2
+execution_models:
+  - close_to_close_shifted
+walk_forward_variants:
+  - name: standard_5y_1y
+    train_years: 5
+    test_years: 1
+  - name: alternate_3y_1y
+    train_years: 3
+    test_years: 1
+  - name: alternate_7y_1y
+    train_years: 7
+    test_years: 1
+cost_scenarios: [10.0, 25.0, 50.0]
+
+stage2_fill_from_stage1:
+  best_target_ann_vol: REPLACE_WITH_STAGE1_WINNER
+  best_realized_vol_window: REPLACE_WITH_STAGE1_WINNER
+  best_max_exposure: REPLACE_WITH_STAGE1_WINNER
+  best_min_exposure: REPLACE_WITH_STAGE1_WINNER
+
+# Example after filling:
+# strategies:
+#   - family: VolTargetTQQQStrategy Stage 2 Local
+#     category: tqqq_voltarget_stage2
+#     config: configs/vol_target_tqqq.yaml
+#     overrides:
+#       experiment_name: stage2_vol_target_tqqq_local
+#       output_dir: outputs/tournament_voltarget_stage2/experiments/stage2_vol_target_tqqq_local
+#       objective: objective_final_ratio
+#       execution_model: close_to_close_shifted
+#       parameter_grid:
+#         target_ann_vol: [BEST_TARGET_ANN_VOL_MINUS_STEP, BEST_TARGET_ANN_VOL, BEST_TARGET_ANN_VOL_PLUS_STEP]
+#         realized_vol_window: [BEST_REALIZED_VOL_WINDOW_NEIGHBOR, BEST_REALIZED_VOL_WINDOW]
+#         min_exposure: [BEST_MIN_EXPOSURE_NEIGHBOR, BEST_MIN_EXPOSURE]
+#         max_exposure: [BEST_MAX_EXPOSURE_NEIGHBOR, BEST_MAX_EXPOSURE]
+#         trend_window: [100, 150, 200]
+#         momentum_window: [20, 63, 126]
+#         trend_multiplier_below_ma: [0.25, 0.50, 0.75]
+#         momentum_boost: [1.00, 1.15, 1.30]
+#         crash_vol_cutoff: [0.040, 0.050, 0.060]
+#         crash_exposure: [0.00, 0.25, 0.50]
+#         risk_off_symbol: [CASH]
+#         risk_off_weight: [0.0]

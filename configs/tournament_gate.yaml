@@ -1,0 +1,229 @@
+tournament_name: candidate_strategy_tournament_gate
+benchmark_symbol: TQQQ
+output_dir: outputs/tournament_gate
+max_estimated_runtime_seconds: 1800
+walk_forward_variants:
+  - name: standard_5y_1y
+    train_years: 5
+    test_years: 1
+  - name: alternate_3y_1y
+    train_years: 3
+    test_years: 1
+  - name: alternate_7y_1y
+    train_years: 7
+    test_years: 1
+cost_scenarios: [10.0, 25.0, 50.0]
+strategies:
+  - family: Existing MA ensemble
+    category: tqqq
+    config: configs/ma_ensemble.yaml
+    overrides:
+      experiment_name: gate_ma_ensemble
+      output_dir: outputs/tournament_gate/experiments/gate_ma_ensemble
+      parameter_grid:
+        short_range: [5]
+        long_range: [50]
+        ma_types: [sma]
+        signal_assets: [TQQQ]
+        thresholds: [0.0]
+        cooldown_days_options: [0]
+        qqq_filter_options: [false]
+        qqq_filter_windows: [200]
+
+  - family: Existing regime
+    category: tqqq
+    config: configs/regime_tqqq.yaml
+    overrides:
+      experiment_name: gate_regime_tqqq
+      output_dir: outputs/tournament_gate/experiments/gate_regime_tqqq
+      parameter_grid: &regime_gate_grid
+        trend_windows: [200]
+        momentum_windows: [40]
+        vol_windows: [20]
+        trend_on_levels: [0.0]
+        trend_off_levels: [0.0]
+        mom_on_levels: [0.0]
+        mom_off_levels: [-0.02]
+        vol_caps: [0.022]
+        risk_on_leverages: [1.0]
+        risk_off_qqq_positions: [1.0]
+        transition_positions: [0.25]
+        min_hold_days_options: [3]
+        cooldown_days_options: [2]
+
+  - family: CoreOverlayTQQQStrategy
+    category: tqqq
+    config: configs/core_overlay_tqqq.yaml
+    overrides:
+      experiment_name: gate_core_overlay_tqqq
+      output_dir: outputs/tournament_gate/experiments/gate_core_overlay_tqqq
+      parameter_grid: &core_overlay_gate_grid
+        core_exposure: [0.65]
+        overlay_max: [0.50]
+        max_total_exposure: [1.25]
+        trend_window: [150]
+        fast_trend_window: [50]
+        momentum_window: [63]
+        vol_window: [20]
+        vol_cap: [0.022]
+        crash_cut_exposure: [0.25]
+        rebound_boost: [false]
+
+  - family: CoreOverlay + Rebound
+    category: tqqq
+    config: configs/core_overlay_with_rebound.yaml
+    overrides:
+      experiment_name: gate_core_overlay_with_rebound
+      output_dir: outputs/tournament_gate/experiments/gate_core_overlay_with_rebound
+      parameter_grid:
+        <<: *core_overlay_gate_grid
+        use_rebound_module: [true]
+        rolling_high_window: [126]
+        drawdown_trigger: [-0.20]
+        rebound_momentum_window: [10]
+        rebound_momentum_threshold: [0.05]
+        reclaim_ma_window: [20]
+        rebound_position: [1.25]
+        rebound_hold_days: [10]
+
+  - family: CoreOverlay + DrawdownGovernor
+    category: tqqq
+    config: configs/core_overlay_governor.yaml
+    overrides:
+      experiment_name: gate_core_overlay_governor
+      output_dir: outputs/tournament_gate/experiments/gate_core_overlay_governor
+      parameter_grid:
+        <<: *core_overlay_gate_grid
+        use_drawdown_governor: [true]
+        portfolio_dd_trigger: [-0.30]
+        qqq_dd_trigger: [-0.15]
+        reduced_exposure: [0.50]
+        recovery_ma_window: [20]
+        recovery_momentum_window: [10]
+        recovery_momentum_threshold: [0.05]
+        max_days_reduced: [40]
+
+  - family: VolTargetTQQQStrategy
+    category: tqqq
+    config: configs/vol_target_tqqq.yaml
+    overrides:
+      experiment_name: gate_vol_target_tqqq
+      output_dir: outputs/tournament_gate/experiments/gate_vol_target_tqqq
+      parameter_grid: &vol_target_gate_grid
+        target_ann_vol: [0.75]
+        realized_vol_window: [20]
+        min_exposure: [0.50]
+        max_exposure: [1.50]
+        trend_window: [150]
+        momentum_window: [63]
+        trend_multiplier_below_ma: [0.50]
+        momentum_boost: [1.15]
+        crash_vol_cutoff: [0.050]
+        crash_exposure: [0.25]
+
+  - family: VolTarget + DrawdownGovernor
+    category: tqqq
+    config: configs/vol_target_governor.yaml
+    overrides:
+      experiment_name: gate_vol_target_governor
+      output_dir: outputs/tournament_gate/experiments/gate_vol_target_governor
+      parameter_grid:
+        <<: *vol_target_gate_grid
+        use_drawdown_governor: [true]
+        portfolio_dd_trigger: [-0.30]
+        qqq_dd_trigger: [-0.15]
+        reduced_exposure: [0.50]
+        recovery_ma_window: [20]
+        recovery_momentum_window: [10]
+        recovery_momentum_threshold: [0.05]
+        max_days_reduced: [40]
+
+  - family: MarketInternals CoreOverlay
+    category: tqqq
+    config: configs/core_overlay_market_internals.yaml
+    overrides:
+      experiment_name: gate_core_overlay_market_internals
+      output_dir: outputs/tournament_gate/experiments/gate_core_overlay_market_internals
+      parameter_grid:
+        <<: *core_overlay_gate_grid
+        use_market_internals: [true]
+        signal_windows: [100]
+        risk_on_threshold: [0.60]
+        risk_off_threshold: [0.40]
+        market_internals_components:
+          - [qqq_trend, spy_trend, credit_risk, tech_strength]
+
+  - family: MarketInternals VolTarget
+    category: tqqq
+    config: configs/vol_target_market_internals.yaml
+    overrides:
+      experiment_name: gate_vol_target_market_internals
+      output_dir: outputs/tournament_gate/experiments/gate_vol_target_market_internals
+      parameter_grid:
+        <<: *vol_target_gate_grid
+        use_market_internals: [true]
+        signal_windows: [100]
+        risk_on_threshold: [0.60]
+        risk_off_threshold: [0.40]
+        market_internals_components:
+          - [qqq_trend, spy_trend, credit_risk, tech_strength]
+
+  - family: CrossAssetLeveragedMomentum
+    category: tqqq
+    config: configs/rotation_tqqq_soxl_upro.yaml
+    overrides:
+      experiment_name: gate_rotation_tqqq_soxl_upro
+      output_dir: outputs/tournament_gate/experiments/gate_rotation_tqqq_soxl_upro
+      use_csv_if_exists: true
+      parameter_grid:
+        risk_assets: [TQQQ]
+        rebalance_frequency: [monthly]
+        top_n: [1]
+        max_asset_weight: [1.00]
+        max_total_leveraged_exposure: [1.00]
+        trend_filter_symbol: [QQQ]
+        trend_filter_window: [200]
+        defensive_asset: [CASH]
+        require_positive_momentum: [true]
+
+  - family: SOXL CoreOverlay
+    category: soxl
+    config: configs/soxl_core_overlay.yaml
+    overrides:
+      experiment_name: gate_soxl_core_overlay
+      output_dir: outputs/tournament_gate/experiments/gate_soxl_core_overlay
+      parameter_grid: *core_overlay_gate_grid
+
+  - family: SOXL VolTarget
+    category: soxl
+    config: configs/soxl_vol_target.yaml
+    overrides:
+      experiment_name: gate_soxl_vol_target
+      output_dir: outputs/tournament_gate/experiments/gate_soxl_vol_target
+      parameter_grid: *vol_target_gate_grid
+
+  - family: SOXL Regime
+    category: soxl
+    config: configs/soxl_regime.yaml
+    overrides:
+      experiment_name: gate_soxl_regime
+      output_dir: outputs/tournament_gate/experiments/gate_soxl_regime
+      parameter_grid: *regime_gate_grid
+
+  - family: SOXL Rotation
+    category: soxl
+    config: configs/soxl_rotation.yaml
+    overrides:
+      experiment_name: gate_soxl_rotation
+      output_dir: outputs/tournament_gate/experiments/gate_soxl_rotation
+      use_csv_if_exists: true
+      parameter_grid:
+        risk_assets: [SOXL]
+        rebalance_frequency: [monthly]
+        top_n: [1]
+        max_asset_weight: [1.00]
+        max_total_leveraged_exposure: [1.00]
+        trend_filter_symbol: [SOXX]
+        trend_filter_window: [200]
+        defensive_asset: [BIL]
+        require_positive_momentum: [true]

@@ -138,6 +138,52 @@ def check_voltarget_monitor_health(
     else:
         _add(rows, "stale_data_days", "warning", f"missing {quality_path}")
 
+    scheduler_status_path = output_dir / "latest_scheduler_status.json"
+    if scheduler_status_path.exists():
+        scheduler_status = _read_json(scheduler_status_path)
+        scheduler_status_value = str(scheduler_status.get("status", ""))
+        scheduler_message = str(scheduler_status.get("message", ""))
+        if scheduler_status_value == "failed":
+            _add(
+                rows,
+                "latest_scheduler_status",
+                "failed",
+                scheduler_message or scheduler_status_value,
+                hard_fail=True,
+            )
+        else:
+            _add(
+                rows,
+                "latest_scheduler_status",
+                "ok" if scheduler_status_value == "ok" else "warning",
+                scheduler_message or scheduler_status_value,
+            )
+    else:
+        _add(rows, "latest_scheduler_status", "warning", f"missing {scheduler_status_path}")
+
+    automation_status_path = output_dir / "latest_automation_status.json"
+    if automation_status_path.exists():
+        automation_status = _read_json(automation_status_path)
+        automation_status_value = str(automation_status.get("status", ""))
+        automation_message = str(automation_status.get("message", ""))
+        if automation_status_value == "failed":
+            _add(
+                rows,
+                "latest_automation_status",
+                "failed",
+                automation_message or automation_status_value,
+                hard_fail=True,
+            )
+        else:
+            _add(
+                rows,
+                "latest_automation_status",
+                "ok" if automation_status_value == "ok" else "warning",
+                automation_message or automation_status_value,
+            )
+    else:
+        _add(rows, "latest_automation_status", "warning", f"missing {automation_status_path}")
+
     run_status_path = output_dir / "latest_run_status.json"
     if run_status_path.exists():
         run_status = _read_json(run_status_path)

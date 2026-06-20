@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $LogDir = Join-Path $RepoRoot "logs\voltarget_monitor"
 $SignalDir = Join-Path $RepoRoot "outputs\live_signal"
-$StatusPath = Join-Path $SignalDir "latest_automation_status.json"
+$SchedulerStatusPath = Join-Path $SignalDir "latest_scheduler_status.json"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SignalDir | Out-Null
@@ -32,7 +32,7 @@ function Add-Step {
     }) | Out-Null
 }
 
-function Write-Status {
+function Write-SchedulerStatus {
     param([string]$Status, [string]$Message)
     $Payload = [ordered]@{
         generated_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -44,7 +44,24 @@ function Write-Status {
         no_broker_integration = $true
         steps = $Steps
     }
-    $Payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $StatusPath -Encoding UTF8
+    $Payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $SchedulerStatusPath -Encoding UTF8
+}
+
+function Invoke-PythonLogged {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & python @Arguments 2>&1 | ForEach-Object {
+            $Line = $_.ToString()
+            Add-Content -LiteralPath $LogPath -Value $Line
+            Write-Host $Line
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    return $ExitCode
 }
 
 function Invoke-MonitorStep {
@@ -59,8 +76,7 @@ function Invoke-MonitorStep {
         Write-Log "SIMULATED $Name"
         return
     }
-    & python @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append
-    $ExitCode = $LASTEXITCODE
+    $ExitCode = Invoke-PythonLogged -Arguments $Arguments
     if ($ExitCode -ne 0) {
         Add-Step -Name $Name -Status "failed" -Detail "exit_code=$ExitCode"
         Write-Log "FAILED $Name exit_code=$ExitCode"
@@ -83,11 +99,11 @@ try {
         "--config", "configs\voltarget_live_monitor.yaml"
     ) -Required $true
 
-    Write-Status -Status "ok" -Message "Daily VolTarget paper monitor completed."
+    Write-SchedulerStatus -Status "ok" -Message "Daily VolTarget paper monitor completed."
     exit 0
 } catch {
     $HardFailure = $true
     Write-Log "HARD FAILURE $($_.Exception.Message)"
-    Write-Status -Status "failed" -Message $_.Exception.Message
+    Write-SchedulerStatus -Status "failed" -Message $_.Exception.Message
     exit 1
 }

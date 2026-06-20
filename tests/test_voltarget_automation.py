@@ -45,6 +45,8 @@ def _write_health_fixture(tmp_path: Path, *, stale_days: int = 0, ledger_exists:
         ]
     ).to_csv(live / "data_quality_report.csv", index=False)
     (live / "latest_run_status.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+    (live / "latest_automation_status.json").write_text(json.dumps({"status": "ok", "message": "ok"}), encoding="utf-8")
+    (live / "latest_scheduler_status.json").write_text(json.dumps({"status": "ok", "message": "ok"}), encoding="utf-8")
     (live / "financing_cost_report.md").write_text("# financing\n", encoding="utf-8")
     pd.DataFrame([{"date": "2026-06-12", "daily_financing_cost": 0.0}]).to_csv(
         live / "financing_cost_history.csv",
@@ -243,6 +245,50 @@ def test_health_check_warns_if_auto_paper_ledger_is_stale(tmp_path: Path) -> Non
     assert row["status"] == "warning"
 
 
+def test_health_check_fails_if_latest_automation_status_failed(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
+    (live / "latest_automation_status.json").write_text(
+        json.dumps({"status": "failed", "message": "wrapper failed"}),
+        encoding="utf-8",
+    )
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
+        ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    row = result.summary.set_index("check").loc["latest_automation_status"]
+    assert result.overall_status == "failed"
+    assert row["status"] == "failed"
+    assert bool(row["hard_fail"])
+
+
+def test_health_check_fails_if_latest_scheduler_status_failed(tmp_path: Path) -> None:
+    live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
+    (live / "latest_scheduler_status.json").write_text(
+        json.dumps({"status": "failed", "message": "wrapper failed"}),
+        encoding="utf-8",
+    )
+
+    result = check_voltarget_monitor_health(
+        output_dir=live,
+        config_path=tmp_path / "missing_config.yaml",
+        ledger_path=tmp_path / "data" / "paper_trading" / "voltarget_paper_trades.csv",
+        execution_drift_dir=drift,
+        paper_reconciliation_dir=reconcile,
+        repo_root=repo_root,
+    )
+
+    row = result.summary.set_index("check").loc["latest_scheduler_status"]
+    assert result.overall_status == "failed"
+    assert row["status"] == "failed"
+    assert bool(row["hard_fail"])
+
+
 def test_health_check_distinguishes_live_monitor_from_historical_backfill(tmp_path: Path) -> None:
     live, drift, reconcile, repo_root = _write_health_fixture(tmp_path)
     config = _write_auto_config(tmp_path / "config.yaml")
@@ -291,7 +337,7 @@ def test_health_check_cli_writes_outputs(tmp_path: Path, monkeypatch) -> None:
     assert (live / "monitor_health_report.md").exists()
 
 
-def test_daily_template_simulated_run_writes_latest_automation_status(tmp_path: Path) -> None:
+def test_daily_template_simulated_run_writes_latest_scheduler_status(tmp_path: Path) -> None:
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     source = Path("scripts/run_voltarget_daily_monitor.ps1.template")
@@ -309,11 +355,47 @@ def test_daily_template_simulated_run_writes_latest_automation_status(tmp_path: 
     )
     assert result.returncode == 0, result.stderr + result.stdout
     status_path = tmp_path / "outputs" / "live_signal" / "latest_automation_status.json"
-    assert status_path.exists()
-    status = json.loads(status_path.read_text(encoding="utf-8-sig"))
+    scheduler_status_path = tmp_path / "outputs" / "live_signal" / "latest_scheduler_status.json"
+    assert not status_path.exists()
+    assert scheduler_status_path.exists()
+    status = json.loads(scheduler_status_path.read_text(encoding="utf-8-sig"))
     assert status["paper_trading_only"] is True
     assert status["no_auto_trading"] is True
     assert status["status"] == "ok"
+
+
+def test_daily_template_allows_native_stderr_when_exit_code_is_zero(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    source = Path("scripts/run_voltarget_daily_monitor.ps1.template")
+    target = scripts / "run_voltarget_daily_monitor.ps1"
+    shutil.copyfile(source, target)
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    (fake_bin / "python.cmd").write_text(
+        "@echo off\n"
+        "echo native info log from stderr 1>&2\n"
+        "exit /b 0\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(target)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    status_path = tmp_path / "outputs" / "live_signal" / "latest_scheduler_status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8-sig"))
+    assert status["status"] == "ok"
+    log_text = next((tmp_path / "logs" / "voltarget_monitor").glob("voltarget_daily_*.log")).read_text(
+        encoding="utf-8",
+    )
+    assert "native info log from stderr" in log_text
 
 
 def test_one_command_workflow_calls_expected_components(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

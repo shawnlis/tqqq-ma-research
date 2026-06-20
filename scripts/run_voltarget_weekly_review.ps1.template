@@ -21,11 +21,49 @@ function Write-Log {
     Write-Host $Line
 }
 
+function Invoke-PythonCaptured {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Output = & python @Arguments 2>&1
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    $Text = ($Output | ForEach-Object { $_.ToString() }) -join "`n"
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Text = $Text
+    }
+}
+
+function Invoke-PythonLogged {
+    param([string[]]$Arguments)
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & python @Arguments 2>&1 | ForEach-Object {
+            $Line = $_.ToString()
+            Add-Content -LiteralPath $LogPath -Value $Line
+            Write-Host $Line
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    return $ExitCode
+}
+
 try {
     Set-Location -LiteralPath $RepoRoot
     Write-Log "PAPER MONITORING ONLY. NO AUTO-TRADING. NO BROKER API CALLS."
 
-    $HelpText = (& python -m research.cli --help 2>&1) -join "`n"
+    $HelpResult = Invoke-PythonCaptured -Arguments @("-m", "research.cli", "--help")
+    if ($HelpResult.ExitCode -ne 0) {
+        throw "research.cli --help failed with exit code $($HelpResult.ExitCode)"
+    }
+    $HelpText = $HelpResult.Text
     if ($HelpText -notmatch "weekly-voltarget-review") {
         Write-Log "WARNING weekly-voltarget-review CLI is not implemented. Weekly review skipped gracefully."
         exit 0
@@ -35,12 +73,14 @@ try {
         Write-Log "WARNING ledger missing: $LedgerPath. Weekly review may classify validation as degraded."
     }
 
-    & python -m research.cli weekly-voltarget-review `
-        --signal-dir outputs\live_signal `
-        --ledger data\paper_trading\voltarget_paper_trades.csv `
-        --output-dir outputs\weekly_review 2>&1 | Tee-Object -FilePath $LogPath -Append
-    if ($LASTEXITCODE -ne 0) {
-        throw "weekly-voltarget-review failed with exit code $LASTEXITCODE"
+    $ExitCode = Invoke-PythonLogged -Arguments @(
+        "-m", "research.cli", "weekly-voltarget-review",
+        "--signal-dir", "outputs\live_signal",
+        "--ledger", "data\paper_trading\voltarget_paper_trades.csv",
+        "--output-dir", "outputs\weekly_review"
+    )
+    if ($ExitCode -ne 0) {
+        throw "weekly-voltarget-review failed with exit code $ExitCode"
     }
     exit 0
 } catch {
